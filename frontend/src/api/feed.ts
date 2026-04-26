@@ -7,6 +7,7 @@ export interface FeedItem {
   data: {
     id?: number;
     author_id?: number;
+    author_username?: string;
     author_display_name?: string;
     author_profile_image_url?: string;
     author_is_ai?: boolean;
@@ -21,12 +22,21 @@ export interface FeedItem {
     };
     rank_score?: number;
     has_liked?: boolean;
+    has_bookmarked?: boolean;
+    is_pinned?: boolean;
     interaction_counts?: {
       like: number;
       reply: number;
       repost: number;
       quote: number;
     };
+    user_id?: number;
+    username?: string;
+    bio?: string;
+    profile_image_url?: string;
+    is_ai_account?: boolean;
+    ai_badge_enabled?: boolean;
+    suggestion_posts_preview?: Array<{ id: number; content: string }>;
     title?: string;
     [key: string]: unknown;
   };

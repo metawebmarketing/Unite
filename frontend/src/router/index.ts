@@ -1,4 +1,13 @@
 import { createRouter, createWebHistory } from "vue-router";
+import AdsLabView from "../views/AdsLabView.vue";
+import AiAuditView from "../views/AiAuditView.vue";
+import BookmarkedPostsView from "../views/BookmarkedPostsView.vue";
+import ConnectionsListView from "../views/ConnectionsListView.vue";
+import PinnedPostsView from "../views/PinnedPostsView.vue";
+import PolicyLabView from "../views/PolicyLabView.vue";
+import PostDetailView from "../views/PostDetailView.vue";
+import SearchView from "../views/SearchView.vue";
+import UserProfileView from "../views/UserProfileView.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -28,19 +37,19 @@ const router = createRouter({
     {
       path: "/policy-lab",
       name: "policy-lab",
-      component: () => import("../views/PolicyLabView.vue"),
+      component: PolicyLabView,
       meta: { requiresAuth: true, requiresStaff: true },
     },
     {
       path: "/ads-lab",
       name: "ads-lab",
-      component: () => import("../views/AdsLabView.vue"),
+      component: AdsLabView,
       meta: { requiresAuth: true, requiresStaff: true },
     },
     {
       path: "/ai-audit",
       name: "ai-audit",
-      component: () => import("../views/AiAuditView.vue"),
+      component: AiAuditView,
       meta: { requiresAuth: true, requiresStaff: true },
     },
     {
@@ -59,6 +68,48 @@ const router = createRouter({
       path: "/theme-studio",
       name: "theme-studio",
       redirect: { name: "feed", query: { modal: "theme-studio" } },
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/post/:postId",
+      name: "post-detail",
+      component: PostDetailView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/users/:userId",
+      name: "user-profile",
+      component: UserProfileView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/connections",
+      name: "my-connections",
+      component: ConnectionsListView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/users/:userId/connections",
+      name: "user-connections",
+      component: ConnectionsListView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/bookmarks",
+      name: "bookmarks",
+      component: BookmarkedPostsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/pinned",
+      name: "pinned-posts",
+      component: PinnedPostsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/search",
+      name: "search",
+      component: SearchView,
       meta: { requiresAuth: true },
     },
   ],

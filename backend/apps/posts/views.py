@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from apps.ai_accounts.services import log_ai_action
 from apps.moderation.models import ModerationFlag
 from apps.moderation.services import is_content_blocked
+from apps.connections.models import Connection
 from apps.posts.idempotency import (
     hash_request_payload,
     load_idempotent_response,
@@ -19,6 +20,80 @@ from apps.posts.idempotency import (
 from apps.posts.models import IdempotencyRecord, Post, PostInteraction, SyncReplayEvent
 from apps.posts.serializers import PostSerializer, ReactSerializer
 from apps.posts.sync_serializers import SyncReplayEventIngestSerializer
+from apps.feed.cache_utils import bump_user_feed_cache_version
+
+
+def build_post_queryset_for_user(user):
+    return (
+        Post.objects.select_related("author")
+        .prefetch_related("attachments")
+        .annotate(
+            like_count=Count(
+                "interactions",
+                filter=Q(interactions__action_type=PostInteraction.ActionType.LIKE),
+            ),
+            reply_count=Count(
+                "interactions",
+                filter=Q(interactions__action_type=PostInteraction.ActionType.REPLY),
+            ),
+            repost_count=Count(
+                "interactions",
+                filter=Q(interactions__action_type=PostInteraction.ActionType.REPOST),
+            ),
+            quote_count=Count(
+                "interactions",
+                filter=Q(interactions__action_type=PostInteraction.ActionType.QUOTE),
+            ),
+            has_liked=Exists(
+                PostInteraction.objects.filter(
+                    post_id=OuterRef("pk"),
+                    user=user,
+                    action_type=PostInteraction.ActionType.LIKE,
+                )
+            ),
+            has_bookmarked=Exists(
+                PostInteraction.objects.filter(
+                    post_id=OuterRef("pk"),
+                    user=user,
+                    action_type=PostInteraction.ActionType.BOOKMARK,
+                )
+            ),
+            author_is_connected=Exists(
+                Connection.objects.filter(
+                    status=Connection.Status.ACCEPTED,
+                ).filter(
+                    Q(requester=user, recipient_id=OuterRef("author_id"))
+                    | Q(requester_id=OuterRef("author_id"), recipient=user)
+                )
+            ),
+        )
+    )
+
+
+def serialize_post_with_author(post, request) -> dict:
+    payload = dict(PostSerializer(post).data)
+    payload["interaction_counts"] = {
+        "like": post.like_count,
+        "reply": post.reply_count,
+        "repost": post.repost_count,
+        "quote": post.quote_count,
+    }
+    payload["has_liked"] = bool(post.has_liked)
+    payload["has_bookmarked"] = bool(post.has_bookmarked)
+    payload["is_pinned"] = bool(post.is_pinned)
+    payload["author_username"] = post.author.username
+    payload["author_display_name"] = getattr(getattr(post.author, "profile", None), "display_name", "") or post.author.username
+    payload["author_profile_image_url"] = (
+        request.build_absolute_uri(post.author.profile.profile_image.url)
+        if hasattr(post.author, "profile") and getattr(post.author.profile, "profile_image", None)
+        else ""
+    )
+    payload["author_is_ai"] = hasattr(post.author, "ai_account")
+    payload["author_ai_badge_enabled"] = (
+        bool(post.author.ai_account.ai_badge_enabled) if hasattr(post.author, "ai_account") else False
+    )
+    payload["author_is_connected"] = bool(getattr(post, "author_is_connected", False))
+    return payload
 
 
 class PostListCreateView(APIView):
@@ -36,36 +111,7 @@ class PostListCreateView(APIView):
         return super().get_throttles()
 
     def get(self, request):
-        queryset = (
-            Post.objects.select_related("author")
-            .prefetch_related("attachments")
-            .annotate(
-                like_count=Count(
-                    "interactions",
-                    filter=Q(interactions__action_type=PostInteraction.ActionType.LIKE),
-                ),
-                reply_count=Count(
-                    "interactions",
-                    filter=Q(interactions__action_type=PostInteraction.ActionType.REPLY),
-                ),
-                repost_count=Count(
-                    "interactions",
-                    filter=Q(interactions__action_type=PostInteraction.ActionType.REPOST),
-                ),
-                quote_count=Count(
-                    "interactions",
-                    filter=Q(interactions__action_type=PostInteraction.ActionType.QUOTE),
-                ),
-                has_liked=Exists(
-                    PostInteraction.objects.filter(
-                        post_id=OuterRef("pk"),
-                        user=request.user,
-                        action_type=PostInteraction.ActionType.LIKE,
-                    )
-                ),
-            )
-            .all()[:50]
-        )
+        queryset = build_post_queryset_for_user(request.user).filter(parent_post__isnull=True)[:50]
         serializer = PostSerializer(queryset, many=True)
         return Response(_serialize_posts(serializer.data, queryset))
 
@@ -190,6 +236,7 @@ class PostListCreateView(APIView):
                 ai_log(status.HTTP_429_TOO_MANY_REQUESTS, response_payload)
                 return Response(response_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
         serializer.save(author=request.user)
+        bump_user_feed_cache_version(request.user.id)
         response_payload = dict(serializer.data)
         if idempotency_key:
             save_idempotent_response(
@@ -274,6 +321,7 @@ class PostReactView(APIView):
             )
             if not created:
                 interaction.delete()
+                bump_user_feed_cache_version(request.user.id)
                 response_payload = {"toggled": "off", "action": action}
                 if idempotency_key:
                     save_idempotent_response(
@@ -301,6 +349,7 @@ class PostReactView(APIView):
                     else "global",
                     policy_version="user-action",
                 )
+            bump_user_feed_cache_version(request.user.id)
             response_payload = {"toggled": "on", "action": action}
             if idempotency_key:
                 save_idempotent_response(
@@ -348,6 +397,15 @@ class PostReactView(APIView):
                     )
                 ai_log(status.HTTP_422_UNPROCESSABLE_ENTITY, response_payload)
                 return Response(response_payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            if action == PostInteraction.ActionType.REPLY:
+                Post.objects.create(
+                    author=request.user,
+                    parent_post=post,
+                    content=content,
+                    visibility=post.visibility,
+                    interest_tags=post.interest_tags if isinstance(post.interest_tags, list) else [],
+                )
+        bump_user_feed_cache_version(request.user.id)
         response_payload = {"id": interaction.id, "action": action}
         if idempotency_key:
             save_idempotent_response(
@@ -360,6 +418,61 @@ class PostReactView(APIView):
             )
         ai_log(status.HTTP_201_CREATED, response_payload)
         return Response(response_payload, status=status.HTTP_201_CREATED)
+
+
+class PostDetailView(APIView):
+    def get(self, request, post_id: int):
+        post = build_post_queryset_for_user(request.user).filter(id=post_id).first()
+        if not post:
+            return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
+        reply_posts = build_post_queryset_for_user(request.user).filter(parent_post_id=post.id).order_by("created_at")[:100]
+        replies = [serialize_post_with_author(reply_post, request) for reply_post in reply_posts]
+        return Response({"post": serialize_post_with_author(post, request), "replies": replies})
+
+
+class UserPostListView(APIView):
+    def get(self, request, user_id: int):
+        posts = (
+            build_post_queryset_for_user(request.user)
+            .filter(author_id=user_id, parent_post__isnull=True)
+            .order_by("-is_pinned", "-created_at")[:50]
+        )
+        return Response([serialize_post_with_author(post, request) for post in posts])
+
+
+class BookmarkedPostListView(APIView):
+    def get(self, request):
+        posts = (
+            build_post_queryset_for_user(request.user)
+            .filter(interactions__user=request.user, interactions__action_type=PostInteraction.ActionType.BOOKMARK)
+            .filter(parent_post__isnull=True)
+            .order_by("-created_at")
+            .distinct()[:50]
+        )
+        return Response([serialize_post_with_author(post, request) for post in posts])
+
+
+class PinnedPostListView(APIView):
+    def get(self, request):
+        posts = (
+            build_post_queryset_for_user(request.user)
+            .filter(author=request.user, is_pinned=True, parent_post__isnull=True)
+            .order_by("-updated_at", "-created_at")[:50]
+        )
+        return Response([serialize_post_with_author(post, request) for post in posts])
+
+
+class PostPinView(APIView):
+    def post(self, request, post_id: int):
+        post = Post.objects.filter(id=post_id, author=request.user).first()
+        if not post:
+            return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
+        if post.parent_post_id:
+            return Response({"detail": "Replies cannot be pinned."}, status=status.HTTP_400_BAD_REQUEST)
+        post.is_pinned = not bool(post.is_pinned)
+        post.save(update_fields=["is_pinned", "updated_at"])
+        bump_user_feed_cache_version(request.user.id)
+        return Response({"is_pinned": bool(post.is_pinned)})
 
 
 class PostSyncMetricsView(APIView):
@@ -419,5 +532,8 @@ def _serialize_posts(serialized_posts: list[dict], queryset) -> list[dict]:
                 "quote": post.quote_count,
             }
             serialized["has_liked"] = bool(post.has_liked)
+            serialized["has_bookmarked"] = bool(post.has_bookmarked)
+            serialized["is_pinned"] = bool(post.is_pinned)
+            serialized["author_is_connected"] = bool(getattr(post, "author_is_connected", False))
         result.append(serialized)
     return result

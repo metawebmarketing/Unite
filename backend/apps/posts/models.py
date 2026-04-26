@@ -11,6 +11,7 @@ class Post(models.Model):
         CONNECTIONS = "connections", "Connections"
 
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="posts")
+    parent_post = models.ForeignKey("self", on_delete=models.CASCADE, related_name="replies", null=True, blank=True)
     content = models.CharField(max_length=500)
     link_url = models.URLField(blank=True)
     link_preview = models.JSONField(default=dict, blank=True)
@@ -20,12 +21,16 @@ class Post(models.Model):
         default=Visibility.PUBLIC,
     )
     interest_tags = models.JSONField(default=list, blank=True)
+    is_pinned = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["author", "-created_at"])]
+        indexes = [
+            models.Index(fields=["author", "-created_at"]),
+            models.Index(fields=["parent_post", "-created_at"]),
+        ]
 
     def __str__(self) -> str:
         return f"Post<{self.id}:{self.author_id}>"

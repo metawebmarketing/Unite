@@ -1,0 +1,189 @@
+Master Implementation Plan (Unite)
+
+Rule 0: Always reference this file before creating or changing logic.
+
+1) Product Vision
+- Build a mobile-first social network inspired by Threads/X.
+- Prioritize positive dialogue, high performance, and secure defaults.
+- Use a modular architecture so new features and ranking models can be added without core rewrites.
+- Tech baseline: Vue.js PWA frontend + Django/DRF backend + Celery + Redis.
+
+2) UX Direction (Based on /Plans/Threads.png)
+- Use a 3-column desktop layout:
+  - Left rail: compact icon navigation (home, search, compose, activity, profile).
+  - Center column: primary feed stream with card-based posts, interaction bar, and endless scroll.
+  - Right column: contextual card (auth/upsell/discovery) with low visual weight.
+- Mobile adaptation:
+  - Collapse to single feed column.
+  - Bottom tab navigation for core actions.
+  - Sticky top bar with brand/home context.
+- Visual style:
+  - Dark theme default with high contrast text and subtle card separators.
+  - Rounded cards, minimal visual noise, clear hierarchy for author > content > actions.
+  - Accessible touch targets (44x44 minimum), keyboard focus states, WCAG AA contrast.
+
+3) Non-Negotiable Platform Rules
+- Security first in every module (auth, API, uploads, rate limits, moderation).
+- Performance first in every module (query optimization, caching, lazy loading).
+- All major features must be pluggable modules, not tightly coupled monolith logic.
+- Theme behavior must be fully overridable by uploaded JSON theme config.
+
+4) Core Feature Set (MVP)
+- Accounts: sign up, sign in, password reset, profile setup.
+- Connections model:
+  - Friendship concept label is "Connection".
+  - Action label is "Connect".
+- Posts:
+  - Text, emoji/icons, image/video attachments, link posts with URL preview cards.
+  - Reasonable character limit (configurable server setting).
+- Feed:
+  - Endless scroll with pagination cursor.
+  - Filter tabs: Connections / Suggestions / Both.
+  - Suggestion insertion cadence: when suggestions are enabled in feed mode, insert 1 suggestion item after every 3 standard feed results.
+  - Cadence must be configurable by server setting (default = 3) so placement can be tuned without code deployment.
+  - Ad insertion support must be reserved in the same feed pipeline using configurable interval rules.
+- Engagement:
+  - Like, reply, repost/share, quote, bookmark/report.
+- Interest system:
+  - Onboarding questionnaire with location and interests.
+  - Require at least 5 interests at onboarding.
+  - Suggest related interests dynamically while user selects.
+  - Allow tagging interests on posts.
+  - Dedicated "Top by Interest" feed view.
+
+5) Theme System (JSON Override)
+- Store a validated theme schema (versioned) that can be uploaded by privileged users.
+- Tokenize UI styles into semantic keys (not hardcoded hex in components):
+  - colors.background, colors.surface, colors.textPrimary, colors.border, etc.
+  - spacing scale, radius scale, shadow presets, typography scale.
+- Runtime theme loader:
+  - Fallback to default theme for missing/invalid keys.
+  - Strict schema validation before activation.
+  - Cache active theme and invalidate on update.
+- PWA-safe behavior:
+  - Theme applied before first paint to avoid flash.
+
+6) Algorithm and Recommendation Architecture
+- Implement ranking as a swappable module interface:
+  - `score_feed_items(user_context, candidate_posts) -> ranked_posts`.
+- Per-user algorithm profile:
+  - Maintain weighted preference vectors/tokens from interests, interactions, and content history.
+  - Index profile fields for fast retrieval.
+- Initial generation model:
+  - Server-side LLM scoring (planned Gemma 4 2b) used in asynchronous tasks.
+  - Prioritize positive, informative, constructive content over rage bait/clickbait.
+  - While generating/updating user profiles, run safety classification on observed and candidate content to flag disallowed categories (for example: CSAM/CSEM, harassment, credible violent threats, illegal promotion, and other prohibited content).
+- Scheduling strategy:
+  - Celery periodic tasks with activity-weighted priority (more active users refreshed more often).
+  - Immediate profile generation trigger after first interest completion and first login if stale/missing.
+- UX state:
+  - Show modal/progress state while profile generation runs initially.
+  - Degrade gracefully with chronological feed fallback.
+- Suggestion strategy:
+  - Recommend mostly similar-interest users, with controlled "difference injection" for perspective diversity.
+  - Safety checks to avoid surfacing harassment-prone combinations.
+  - In "Both" mode, keep strict interleave order rules so suggestion cadence and ad cadence are deterministic and testable.
+
+7) Feed Injection Modules (Suggestions + Ads)
+- Build feed assembly as pluggable injectors instead of hardcoded logic.
+- Required injector modules:
+  - Suggestion injector (default cadence: every 3 organic results when enabled).
+  - Advertisement injector (disabled by default, can be enabled later without feed rewrite).
+- Injector contract:
+  - `inject(feed_items, user_context, config) -> ordered_feed_items`.
+- Configuration requirements:
+  - Independent interval controls for suggestions and ads.
+  - Optional regional overrides, account-tier overrides, and experiment flags.
+  - Max-density guardrails to prevent over-injection.
+- Ranking compatibility:
+  - Ads and suggestions must integrate without breaking feed pagination and ranking contracts.
+  - Each injected item must carry explicit metadata (`item_type`, `source_module`, `injection_reason`).
+
+8) AI Agent Accounts
+- Separate AI agent registration/auth endpoints.
+- AI accounts must have immutable AI identity flag and icon badge on avatar/profile.
+- Enforce stricter rate limits and transparency metadata for AI-generated actions.
+- Audit log for all AI account actions.
+
+9) Security Architecture
+- AuthN/AuthZ:
+  - Use Django auth + JWT/session strategy with secure cookie options where applicable.
+  - Enforce permission checks per endpoint and object-level ownership checks.
+- API hardening:
+  - Input validation via DRF serializers only.
+  - CSRF/CORS configuration by environment.
+  - Strict upload validation (mime/size), virus scanning pipeline for media.
+- Abuse prevention:
+  - Tiered rate limits by endpoint + account type + IP fingerprint.
+  - Anti-spam heuristics (burst posting, repeated links, duplicate content).
+  - Policy engine must support region-specific legal packs so blocked/flagged content definitions can be updated quickly per jurisdiction.
+  - Keep policy logic data-driven (versioned rules/config), not hardcoded in model code paths.
+- Data protection:
+  - Encrypt secrets at rest, TLS in transit, rotate keys/tokens.
+  - Minimize PII storage and log redaction.
+
+10) Performance Architecture
+- Backend:
+  - Use `select_related`/`prefetch_related` on feed and profile endpoints.
+  - Cursor pagination for feed APIs.
+  - Redis caching for feed fragments, profile summaries, and link previews.
+- Frontend:
+  - Virtualized list rendering for long feeds.
+  - Lazy-load media and route-level code splitting.
+  - Optimistic UI updates for reactions and connection actions.
+- PWA:
+  - Offline shell, stale-while-revalidate feed cache strategy for recent data.
+  - Background sync for queued non-critical actions where safe.
+
+11) Suggested Django App Layout
+- `accounts`: user model extensions, auth flows, onboarding state.
+- `connections`: connection graph, suggestions, relationship actions.
+- `posts`: post model, media attachments, link previews, tags/interests.
+- `feed`: candidate generation, ranking module interface, feed APIs.
+- `interests`: taxonomy, user-interest relationships, trend surfaces.
+- `moderation`: reports, safety scoring, trust signals.
+- `policy`: region/legal policy packs, rule versioning, effective-date rollout, and policy resolver.
+- `ads`: ad campaigns, targeting hooks, pacing, and feed ad injector integration.
+- `ai_accounts`: AI account lifecycle and policy enforcement.
+- `themes`: theme schema, upload, validation, activation.
+
+12) API Surface (High Level)
+- `POST /api/v1/auth/signup`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/onboarding/interests`
+- `GET /api/v1/feed?mode=connections|suggestions|both&cursor=...`
+- `GET /api/v1/feed/config` (returns active intervals/cadence and injection rules)
+- `POST /api/v1/policy/resolve` (internal/admin use for policy evaluation preview by region)
+- `POST /api/v1/posts`
+- `POST /api/v1/posts/{id}/react`
+- `POST /api/v1/connections/{user_id}/connect`
+- `GET /api/v1/interests/top`
+- `POST /api/v1/themes/upload`
+- `POST /api/v1/ai/signup` (AI-only route)
+
+13) Delivery Roadmap
+- Phase 1: Foundations
+  - Project scaffolding, auth, base profile, connection model, posting MVP.
+- Phase 2: Feed and UX
+  - Endless scroll feed, interactions, interest tagging, design parity with reference.
+- Phase 3: Algorithm v1
+  - Profile generation pipeline, scheduling, ranking interface, fallback logic, and profile-time safety classification.
+- Phase 4: Safety and Scale
+  - Rate limits, moderation tooling, region-aware legal policy packs, performance tuning, caching hardening.
+- Phase 5: Feed monetization readiness
+  - Ad injector module with configurable insertion interval and reporting hooks.
+- Phase 6: Theme + PWA polish
+  - JSON theme upload/validation, installable PWA, offline/cache tuning.
+
+14) Acceptance Criteria (Launch Gate)
+- Feed remains responsive under load with cursor pagination and no N+1 regressions.
+- In feed modes with suggestions enabled, 1 suggestion appears after every 3 organic feed results by default.
+- Ad module can be enabled and configured for interval-based feed insertion without changing core feed ranking code.
+- Security checks pass: auth, permissions, rate limits, upload validation, logging.
+- Safety pipeline flags prohibited content classes during profile generation/update and routes them for policy enforcement.
+- Legal/policy restrictions are region-aware and can be updated via versioned policy configuration.
+- Theme override can change UI tokens without code changes.
+- Algorithm module can be swapped without feed API contract changes.
+- AI accounts are visibly labeled and routed through dedicated endpoints.
+- Core mobile UX follows reference structure and remains accessible.
+

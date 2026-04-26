@@ -109,6 +109,16 @@ class ProfileView(APIView):
         return Response(serializer.data)
 
 
+class PublicProfileView(APIView):
+    def get(self, request, user_id: int):
+        profile = get_object_or_404(Profile.objects.select_related("user"), user_id=user_id)
+        serializer = ProfileSerializer(profile, context={"request": request})
+        payload = dict(serializer.data)
+        payload["user_id"] = profile.user_id
+        payload["username"] = profile.user.username
+        return Response(payload)
+
+
 class ProfileImageUploadView(APIView):
     def post(self, request):
         profile = get_object_or_404(Profile, user=request.user)

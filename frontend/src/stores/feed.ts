@@ -16,6 +16,8 @@ interface FeedState {
   isLoading: boolean;
   nextCursor: string | null;
   hasMore: boolean;
+  blockedAuthorIds: number[];
+  pendingActionKeys: string[];
 }
 
 export const useFeedStore = defineStore("feed", {
@@ -27,8 +29,60 @@ export const useFeedStore = defineStore("feed", {
     isLoading: false,
     nextCursor: null,
     hasMore: true,
+    blockedAuthorIds: [],
+    pendingActionKeys: [],
   }),
   actions: {
+    isActionPending(key: string): boolean {
+      return this.pendingActionKeys.includes(key);
+    },
+    beginAction(key: string) {
+      if (this.pendingActionKeys.includes(key)) {
+        return;
+      }
+      this.pendingActionKeys = [...this.pendingActionKeys, key];
+    },
+    endAction(key: string) {
+      this.pendingActionKeys = this.pendingActionKeys.filter((value) => value !== key);
+    },
+    hydrateBlockedUsers() {
+      if (typeof window === "undefined") {
+        return;
+      }
+      try {
+        const raw = window.localStorage.getItem("unite.blockedAuthorIds");
+        if (!raw) {
+          this.blockedAuthorIds = [];
+          return;
+        }
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          this.blockedAuthorIds = parsed
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value > 0);
+        } else {
+          this.blockedAuthorIds = [];
+        }
+      } catch {
+        this.blockedAuthorIds = [];
+      }
+    },
+    persistBlockedUsers() {
+      if (typeof window === "undefined") {
+        return;
+      }
+      window.localStorage.setItem("unite.blockedAuthorIds", JSON.stringify(this.blockedAuthorIds));
+    },
+    blockAuthor(authorId: number) {
+      if (!Number.isInteger(authorId) || authorId <= 0 || this.blockedAuthorIds.includes(authorId)) {
+        return;
+      }
+      this.blockedAuthorIds = [...this.blockedAuthorIds, authorId];
+      this.persistBlockedUsers();
+    },
+    isAuthorBlocked(authorId: number): boolean {
+      return this.blockedAuthorIds.includes(authorId);
+    },
     buildFeedCacheKey(): string {
       return `${this.mode}:${this.interestTag || "none"}`;
     },
@@ -95,8 +149,14 @@ export const useFeedStore = defineStore("feed", {
       await this.loadFeed(false);
     },
     async toggleLike(postId: number) {
+      const actionKey = `like:${postId}`;
+      if (this.isActionPending(actionKey)) {
+        return;
+      }
+      this.beginAction(actionKey);
       const target = this.items.find((item) => item.item_type === "post" && item.data.id === postId);
       if (!target) {
+        this.endAction(actionKey);
         return;
       }
       const counts = target.data.interaction_counts ?? { like: 0, reply: 0, repost: 0, quote: 0 };
@@ -115,6 +175,73 @@ export const useFeedStore = defineStore("feed", {
           target.data.has_liked = previousLiked;
           target.data.interaction_counts = counts;
         }
+      } finally {
+        this.endAction(actionKey);
+      }
+    },
+    async toggleReaction(postId: number, action: "repost" | "bookmark") {
+      const actionKey = `${action}:${postId}`;
+      if (this.isActionPending(actionKey)) {
+        return;
+      }
+      this.beginAction(actionKey);
+      const target = this.items.find((item) => item.item_type === "post" && item.data.id === postId);
+      if (!target) {
+        this.endAction(actionKey);
+        return;
+      }
+      const counts = target.data.interaction_counts ?? { like: 0, reply: 0, repost: 0, quote: 0 };
+      const isRepost = action === "repost";
+      const isBookmark = action === "bookmark";
+      const previousCount = isRepost ? counts.repost : 0;
+      const previousBookmarked = Boolean(target.data.has_bookmarked);
+      if (isRepost) {
+        target.data.interaction_counts = {
+          ...counts,
+          repost: previousCount > 0 ? Math.max(0, previousCount - 1) : previousCount + 1,
+        };
+      }
+      if (isBookmark) {
+        target.data.has_bookmarked = !previousBookmarked;
+      }
+      try {
+        await reactToPost(postId, { action });
+      } catch {
+        if (!navigator.onLine) {
+          await enqueueReactPost(postId, { action });
+        } else {
+          if (isRepost) {
+            target.data.interaction_counts = counts;
+          }
+          if (isBookmark) {
+            target.data.has_bookmarked = previousBookmarked;
+          }
+        }
+      } finally {
+        this.endAction(actionKey);
+      }
+    },
+    async replyToPost(postId: number, content: string) {
+      const actionKey = `reply:${postId}`;
+      if (this.isActionPending(actionKey)) {
+        return;
+      }
+      const trimmed = content.trim();
+      if (!trimmed) {
+        return;
+      }
+      this.beginAction(actionKey);
+      const target = this.items.find((item) => item.item_type === "post" && item.data.id === postId);
+      if (target) {
+        const counts = target.data.interaction_counts ?? { like: 0, reply: 0, repost: 0, quote: 0 };
+        target.data.interaction_counts = { ...counts, reply: counts.reply + 1 };
+      }
+      try {
+        await reactToPost(postId, { action: "reply", content: trimmed });
+      } catch {
+        // Ignore local rollback to avoid jumping counts during temporary failures.
+      } finally {
+        this.endAction(actionKey);
       }
     },
     async flushQueuedActions() {

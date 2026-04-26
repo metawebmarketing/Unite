@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import { fetchAiAuditRecords, type AiAuditRecord } from "../api/ai-audit";
 
+const router = useRouter();
 const filters = reactive({
   user_id: "",
   action_name: "",
@@ -13,6 +15,14 @@ const filters = reactive({
 const records = ref<AiAuditRecord[]>([]);
 const statusText = ref("");
 const errorText = ref("");
+
+function goBack() {
+  if (window.history.length > 1) {
+    router.back();
+    return;
+  }
+  void router.push({ name: "feed" });
+}
 
 async function loadAudits() {
   statusText.value = "Loading audit records...";
@@ -26,9 +36,14 @@ async function loadAudits() {
       limit: Number(filters.limit) || 100,
     });
     statusText.value = `Loaded ${records.value.length} records.`;
-  } catch {
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
     statusText.value = "";
-    errorText.value = "Unable to load audit records. Confirm account permissions.";
+    if (status === 429) {
+      errorText.value = "Rate limited while loading audit records. Please wait and retry.";
+    } else {
+      errorText.value = "Unable to load audit records. Confirm account permissions.";
+    }
   }
 }
 
@@ -39,6 +54,9 @@ onMounted(async () => {
 
 <template>
   <section class="auth-card">
+    <button class="back-button icon-only-button" type="button" @click="goBack" title="Back" aria-label="Back">
+      <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <h1>AI Audit Lab</h1>
     <form class="stack" @submit.prevent="loadAudits">
       <input v-model="filters.user_id" placeholder="User ID filter (staff only)" />

@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.connections.models import Connection
+from apps.feed.cache_utils import get_user_feed_cache_version
 from apps.feed.serializers import FeedConfigSerializer, FeedPageSerializer
 from apps.feed.ranking import score_feed_items
 from apps.feed.services import inject_feed_items, load_feed_config
@@ -23,10 +24,12 @@ from apps.posts.models import PostInteraction
 ALLOWED_POST_DATA_FIELDS = {
     "id",
     "author_id",
+    "author_username",
     "author_display_name",
     "author_profile_image_url",
     "author_is_ai",
     "author_ai_badge_enabled",
+    "author_is_connected",
     "content",
     "interest_tags",
     "created_at",
@@ -34,6 +37,8 @@ ALLOWED_POST_DATA_FIELDS = {
     "rank_score",
     "interaction_counts",
     "has_liked",
+    "has_bookmarked",
+    "is_pinned",
 }
 
 
@@ -61,10 +66,11 @@ def build_feed_cache_key(
     region: str,
     interest_tag: str | None,
     fields_signature: str,
+    user_cache_version: int,
 ) -> str:
     raw = (
         f"user={user_id}|mode={mode}|cursor={cursor or 'none'}|size={page_size}|"
-        f"region={region}|interest={interest_tag or 'none'}|fields={fields_signature}"
+        f"region={region}|interest={interest_tag or 'none'}|fields={fields_signature}|v={user_cache_version}"
     )
     digest = sha256(raw.encode("utf-8")).hexdigest()
     return f"feed:v1:{digest}"
@@ -125,6 +131,7 @@ class FeedListView(APIView):
             region=region_code,
             interest_tag=interest_tag,
             fields_signature=fields_signature,
+            user_cache_version=get_user_feed_cache_version(request.user.id),
         )
         cached = cache.get(cache_key)
         if cached is not None:
@@ -164,6 +171,21 @@ class FeedListView(APIView):
                         action_type=PostInteraction.ActionType.LIKE,
                     )
                 ),
+                has_bookmarked=Exists(
+                    PostInteraction.objects.filter(
+                        post_id=OuterRef("pk"),
+                        user=request.user,
+                        action_type=PostInteraction.ActionType.BOOKMARK,
+                    )
+                ),
+                author_is_connected=Exists(
+                    Connection.objects.filter(
+                        status=Connection.Status.ACCEPTED,
+                    ).filter(
+                        Q(requester=request.user, recipient_id=OuterRef("author_id"))
+                        | Q(requester_id=OuterRef("author_id"), recipient=request.user)
+                    )
+                ),
                 has_safety_flag=Exists(
                     ModerationFlag.objects.filter(
                         content_type="post",
@@ -175,6 +197,7 @@ class FeedListView(APIView):
                 else Exists(ModerationFlag.objects.none()),
             )
             .filter(has_safety_flag=False)
+            .filter(parent_post__isnull=True)
             .order_by("-created_at", "-id")
         )
 
@@ -245,6 +268,7 @@ class FeedListView(APIView):
             post_data = {
                 "id": post.id,
                 "author_id": post.author_id,
+                "author_username": post.author.username,
                 "author_display_name": getattr(getattr(post.author, "profile", None), "display_name", "")
                 or post.author.username,
                 "author_profile_image_url": request.build_absolute_uri(post.author.profile.profile_image.url)
@@ -254,6 +278,7 @@ class FeedListView(APIView):
                 "author_ai_badge_enabled": bool(post.author.ai_account.ai_badge_enabled)
                 if hasattr(post.author, "ai_account")
                 else False,
+                "author_is_connected": bool(getattr(post, "author_is_connected", False)),
                 "content": post.content or "No content provided.",
                 "interest_tags": post.interest_tags if isinstance(post.interest_tags, list) else [],
                 "created_at": post.created_at.isoformat(),
@@ -266,6 +291,8 @@ class FeedListView(APIView):
                     "quote": post.quote_count,
                 },
                 "has_liked": bool(post.has_liked),
+                "has_bookmarked": bool(post.has_bookmarked),
+                "is_pinned": bool(post.is_pinned),
             }
             if requested_fields is not None:
                 post_data = {key: value for key, value in post_data.items() if key in requested_fields}
@@ -284,6 +311,26 @@ class FeedListView(APIView):
             organic_offset=organic_offset,
             suggestion_candidates=build_suggestion_candidates(user=request.user),
         )
+        connected_pairs = Connection.objects.filter(
+            status=Connection.Status.ACCEPTED,
+        ).filter(
+            Q(requester=request.user) | Q(recipient=request.user)
+        ).values_list("requester_id", "recipient_id")
+        connected_user_ids = set()
+        for requester_id, recipient_id in connected_pairs:
+            if requester_id != request.user.id:
+                connected_user_ids.add(int(requester_id))
+            if recipient_id != request.user.id:
+                connected_user_ids.add(int(recipient_id))
+        for item in injected_items:
+            if item.get("item_type") != "suggestion":
+                continue
+            data = item.get("data", {})
+            profile_image_url = str(data.get("profile_image_url", "")).strip()
+            if profile_image_url and profile_image_url.startswith("/"):
+                data["profile_image_url"] = request.build_absolute_uri(profile_image_url)
+            suggestion_user_id = int(data.get("user_id") or 0)
+            data["is_connected"] = suggestion_user_id in connected_user_ids
 
         next_cursor = None
         if has_more and cursor_anchor_post:

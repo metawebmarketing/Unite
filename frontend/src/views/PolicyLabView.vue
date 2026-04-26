@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import {
   createPolicyPack,
@@ -9,11 +10,13 @@ import {
   type PolicyResolveResponse,
 } from "../api/policy";
 
+const router = useRouter();
 const regionCode = ref("global");
 const userKey = ref("sample-user");
 const packs = ref<PolicyPack[]>([]);
 const resolved = ref<PolicyResolveResponse | null>(null);
 const statusText = ref("");
+const errorText = ref("");
 
 const form = reactive({
   version: "v-next",
@@ -21,30 +24,71 @@ const form = reactive({
   rollout_percentage: 100,
 });
 
+function goBack() {
+  if (window.history.length > 1) {
+    router.back();
+    return;
+  }
+  void router.push({ name: "feed" });
+}
+
 async function loadPacks() {
-  packs.value = await listPolicyPacks(regionCode.value);
+  try {
+    packs.value = await listPolicyPacks(regionCode.value);
+    errorText.value = "";
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
+    if (status === 429) {
+      errorText.value = "Rate limited while loading policy packs. Please wait a few seconds and retry.";
+    } else {
+      errorText.value = "Unable to load policy packs right now.";
+    }
+    packs.value = [];
+  }
 }
 
 async function onCreatePack() {
   statusText.value = "";
-  await createPolicyPack({
-    region_code: regionCode.value,
-    version: form.version,
-    prohibited_categories: form.categories
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-    enabled: true,
-    rollout_percentage: Number(form.rollout_percentage),
-    effective_from: new Date().toISOString(),
-    notes: "Created from Policy Lab",
-  });
-  statusText.value = "Policy pack created.";
-  await loadPacks();
+  errorText.value = "";
+  try {
+    await createPolicyPack({
+      region_code: regionCode.value,
+      version: form.version,
+      prohibited_categories: form.categories
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+      enabled: true,
+      rollout_percentage: Number(form.rollout_percentage),
+      effective_from: new Date().toISOString(),
+      notes: "Created from Policy Lab",
+    });
+    statusText.value = "Policy pack created.";
+    await loadPacks();
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
+    statusText.value = "";
+    if (status === 429) {
+      errorText.value = "Rate limited while creating policy pack. Please wait and try again.";
+    } else {
+      errorText.value = "Unable to create policy pack.";
+    }
+  }
 }
 
 async function onResolve() {
-  resolved.value = await resolvePolicy(regionCode.value, userKey.value);
+  errorText.value = "";
+  try {
+    resolved.value = await resolvePolicy(regionCode.value, userKey.value);
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
+    if (status === 429) {
+      errorText.value = "Rate limited while resolving policy. Please retry shortly.";
+    } else {
+      errorText.value = "Unable to resolve policy.";
+    }
+    resolved.value = null;
+  }
 }
 
 onMounted(async () => {
@@ -54,6 +98,9 @@ onMounted(async () => {
 
 <template>
   <section class="auth-card">
+    <button class="back-button icon-only-button" type="button" @click="goBack" title="Back" aria-label="Back">
+      <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <h1>Policy Lab</h1>
     <div class="stack">
       <input v-model="regionCode" placeholder="Region code" />
@@ -62,6 +109,7 @@ onMounted(async () => {
       <p v-if="resolved">
         Active: {{ resolved.version }} ({{ resolved.source }}, {{ resolved.rollout_percentage }}%)
       </p>
+      <p v-if="errorText">{{ errorText }}</p>
     </div>
 
     <hr />
@@ -72,6 +120,7 @@ onMounted(async () => {
       <input v-model.number="form.rollout_percentage" type="number" min="0" max="100" />
       <button type="submit">Create policy pack</button>
       <p v-if="statusText">{{ statusText }}</p>
+      <p v-if="errorText">{{ errorText }}</p>
     </form>
 
     <h2>Policy Packs</h2>

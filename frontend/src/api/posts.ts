@@ -16,8 +16,69 @@ export interface ReactPostInput {
   content?: string;
 }
 
+export interface PostAuthorSummary {
+  author_id: number;
+  author_username: string;
+  author_display_name: string;
+  author_profile_image_url: string;
+  author_is_ai: boolean;
+  author_ai_badge_enabled: boolean;
+  author_is_connected?: boolean;
+}
+
+export interface PostRecord extends PostAuthorSummary {
+  id: number;
+  content: string;
+  created_at: string;
+  is_pinned?: boolean;
+  link_preview?: {
+    url: string;
+    host: string;
+    title: string;
+    description: string;
+  };
+  has_liked: boolean;
+  has_bookmarked?: boolean;
+  interaction_counts: {
+    like: number;
+    reply: number;
+    repost: number;
+    quote: number;
+  };
+}
+
+export interface PostDetailResponse {
+  post: PostRecord;
+  replies: PostRecord[];
+}
+
 export async function reactToPost(postId: number, payload: ReactPostInput): Promise<unknown> {
   const response = await apiClient.post(`/posts/${postId}/react`, payload);
+  return response.data;
+}
+
+export async function fetchPostDetail(postId: number): Promise<PostDetailResponse> {
+  const response = await apiClient.get<PostDetailResponse>(`/posts/${postId}`);
+  return response.data;
+}
+
+export async function fetchPostsByUser(userId: number): Promise<PostRecord[]> {
+  const response = await apiClient.get<PostRecord[]>(`/posts/user/${userId}`);
+  return response.data;
+}
+
+export async function fetchBookmarkedPosts(): Promise<PostRecord[]> {
+  const response = await apiClient.get<PostRecord[]>("/posts/bookmarks");
+  return response.data;
+}
+
+export async function fetchPinnedPosts(): Promise<PostRecord[]> {
+  const response = await apiClient.get<PostRecord[]>("/posts/pinned");
+  return response.data;
+}
+
+export async function togglePostPin(postId: number): Promise<{ is_pinned: boolean }> {
+  const response = await apiClient.post<{ is_pinned: boolean }>(`/posts/${postId}/pin`);
   return response.data;
 }
 

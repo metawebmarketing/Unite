@@ -11,7 +11,12 @@ from apps.moderation.models import ModerationFlag
 @dataclass
 class SuggestionCandidate:
     user_id: int
+    username: str
     display_name: str
+    bio: str
+    profile_image_url: str
+    is_ai_account: bool
+    ai_badge_enabled: bool
     shared_interest_count: int
     reason: str
 
@@ -62,7 +67,14 @@ def build_suggestion_candidates(*, user, limit: int = 40) -> list[dict]:
         overlap = len(user_interests.intersection(normalized))
         candidate = SuggestionCandidate(
             user_id=profile.user_id,
+            username=profile.user.username,
             display_name=profile.display_name or profile.user.username,
+            bio=profile.bio or "",
+            profile_image_url=profile.profile_image.url if profile.profile_image else "",
+            is_ai_account=hasattr(profile.user, "ai_account"),
+            ai_badge_enabled=bool(profile.user.ai_account.ai_badge_enabled)
+            if hasattr(profile.user, "ai_account")
+            else False,
             shared_interest_count=overlap,
             reason="similar_interests" if overlap > 0 else "diversity_injection",
         )
@@ -91,7 +103,12 @@ def build_suggestion_candidates(*, user, limit: int = 40) -> list[dict]:
     return [
         {
             "user_id": item.user_id,
+            "username": item.username,
             "display_name": item.display_name,
+            "bio": item.bio,
+            "profile_image_url": item.profile_image_url,
+            "is_ai_account": item.is_ai_account,
+            "ai_badge_enabled": item.ai_badge_enabled,
             "shared_interest_count": item.shared_interest_count,
             "reason": item.reason,
         }

@@ -116,7 +116,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/minute",
-        "user": "120/minute",
+        "user": "600/minute",
         "post_write": "20/minute",
         "post_write_ai": "10/minute",
         "post_react": "120/minute",

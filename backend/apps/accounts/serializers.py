@@ -1,12 +1,14 @@
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
+from django.db.models import Q
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import Profile
+from apps.connections.models import Connection
 
 User = get_user_model()
 
@@ -39,6 +41,9 @@ class ProfileSerializer(serializers.ModelSerializer):
     ai_badge_enabled = serializers.SerializerMethodField()
     is_staff = serializers.SerializerMethodField()
     profile_image_url = serializers.SerializerMethodField()
+    username = serializers.SerializerMethodField()
+    user_id = serializers.SerializerMethodField()
+    connection_count = serializers.SerializerMethodField()
 
     def get_is_ai_account(self, obj):
         return hasattr(obj.user, "ai_account")
@@ -59,6 +64,19 @@ class ProfileSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.profile_image.url)
         return obj.profile_image.url
 
+    def get_username(self, obj):
+        return obj.user.username
+
+    def get_user_id(self, obj):
+        return obj.user_id
+
+    def get_connection_count(self, obj):
+        return Connection.objects.filter(
+            status=Connection.Status.ACCEPTED,
+        ).filter(
+            Q(requester_id=obj.user_id) | Q(recipient_id=obj.user_id)
+        ).count()
+
     class Meta:
         model = Profile
         fields = [
@@ -70,6 +88,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             "ai_badge_enabled",
             "is_staff",
             "profile_image_url",
+            "username",
+            "user_id",
+            "connection_count",
             "algorithm_profile_status",
             "algorithm_vector",
             "updated_at",
@@ -79,6 +100,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             "ai_badge_enabled",
             "is_staff",
             "profile_image_url",
+            "username",
+            "user_id",
+            "connection_count",
             "algorithm_profile_status",
             "algorithm_vector",
             "updated_at",

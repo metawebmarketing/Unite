@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import {
   createAdConfig,
@@ -10,6 +11,7 @@ import {
   type AdSlotConfig,
 } from "../api/ads";
 
+const router = useRouter();
 const regionCode = ref("global");
 const campaignFilter = ref("");
 const configs = ref<AdSlotConfig[]>([]);
@@ -26,35 +28,82 @@ const form = reactive({
   target_interest_tags: "",
 });
 
+function goBack() {
+  if (window.history.length > 1) {
+    router.back();
+    return;
+  }
+  void router.push({ name: "feed" });
+}
+
 async function loadConfigs() {
-  configs.value = await listAdConfigs(regionCode.value);
+  try {
+    configs.value = await listAdConfigs(regionCode.value);
+    statusText.value = "";
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
+    if (status === 429) {
+      statusText.value = "Rate limited while loading ad configs. Please retry shortly.";
+    } else {
+      statusText.value = "Unable to load ad configs.";
+    }
+    configs.value = [];
+  }
 }
 
 async function loadMetrics() {
-  metrics.value = await fetchAdMetrics(regionCode.value, campaignFilter.value);
+  try {
+    metrics.value = await fetchAdMetrics(regionCode.value, campaignFilter.value);
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
+    if (status === 429) {
+      statusText.value = "Rate limited while loading ad metrics. Please retry shortly.";
+    } else {
+      statusText.value = "Unable to load ad metrics.";
+    }
+    metrics.value = null;
+  }
 }
 
 async function onCreateConfig() {
   statusText.value = "";
-  await createAdConfig({
-    region_code: form.region_code.trim().toLowerCase(),
-    campaign_key: form.campaign_key.trim().toLowerCase() || undefined,
-    experiment_key: form.experiment_key.trim().toLowerCase() || undefined,
-    interval: Number(form.interval),
-    enabled: Boolean(form.enabled),
-    account_tier_target: form.account_tier_target,
-    target_interest_tags: form.target_interest_tags
-      .split(",")
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean),
-  });
-  statusText.value = "Ad config created.";
-  await loadConfigs();
+  try {
+    await createAdConfig({
+      region_code: form.region_code.trim().toLowerCase(),
+      campaign_key: form.campaign_key.trim().toLowerCase() || undefined,
+      experiment_key: form.experiment_key.trim().toLowerCase() || undefined,
+      interval: Number(form.interval),
+      enabled: Boolean(form.enabled),
+      account_tier_target: form.account_tier_target,
+      target_interest_tags: form.target_interest_tags
+        .split(",")
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean),
+    });
+    statusText.value = "Ad config created.";
+    await loadConfigs();
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
+    if (status === 429) {
+      statusText.value = "Rate limited while creating ad config. Please wait and retry.";
+    } else {
+      statusText.value = "Unable to create ad config.";
+    }
+  }
 }
 
 async function onToggleEnabled(config: AdSlotConfig) {
-  await updateAdConfig(config.id, { enabled: !config.enabled });
-  await loadConfigs();
+  try {
+    await updateAdConfig(config.id, { enabled: !config.enabled });
+    await loadConfigs();
+  } catch (error: unknown) {
+    const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
+    if (status === 429) {
+      statusText.value = "Rate limited while updating ad config. Please retry shortly.";
+    } else {
+      statusText.value = "Unable to update ad config.";
+    }
+  }
 }
 
 onMounted(async () => {
@@ -65,6 +114,9 @@ onMounted(async () => {
 
 <template>
   <section class="auth-card">
+    <button class="back-button icon-only-button" type="button" @click="goBack" title="Back" aria-label="Back">
+      <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <h1>Ads Lab</h1>
     <div class="stack">
       <input v-model="regionCode" placeholder="Region code" />

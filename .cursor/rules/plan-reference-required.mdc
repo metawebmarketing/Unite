@@ -1,0 +1,11 @@
+---
+description: Require consulting the master plan before work
+alwaysApply: true
+---
+
+# Plan Reference Requirement
+
+- Before implementing, editing, debugging, or proposing architecture changes, read and reference `Plans/Plan.txt`.
+- Treat `Plans/Plan.txt` as the primary source of product and system requirements.
+- If a task appears to conflict with `Plans/Plan.txt`, pause and explicitly flag the conflict before proceeding.
+- Keep all new logic aligned with modularity, security, and performance constraints defined in `Plans/Plan.txt`.

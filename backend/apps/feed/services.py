@@ -87,7 +87,12 @@ def inject_feed_items(
                 suggestion_payload = {
                     "title": f"Connect with {candidate['display_name']}",
                     "user_id": candidate["user_id"],
+                    "username": candidate.get("username", ""),
                     "display_name": candidate["display_name"],
+                    "bio": candidate.get("bio", ""),
+                    "profile_image_url": candidate.get("profile_image_url", ""),
+                    "is_ai_account": bool(candidate.get("is_ai_account", False)),
+                    "ai_badge_enabled": bool(candidate.get("ai_badge_enabled", False)),
                     "shared_interest_count": candidate["shared_interest_count"],
                     "reason": candidate["reason"],
                 }
