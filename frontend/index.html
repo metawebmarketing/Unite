@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#020205" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <script>
+      (function applyCachedThemeBeforePaint() {
+        try {
+          var raw = localStorage.getItem("unite:active-theme-tokens");
+          if (!raw) return;
+          var tokens = JSON.parse(raw);
+          if (!tokens || typeof tokens !== "object") return;
+          var root = document.documentElement;
+          var colors = tokens.colors || {};
+          var spacing = tokens.spacing || {};
+          var radius = tokens.radius || {};
+          var typography = tokens.typography || {};
+          if (colors.background) root.style.setProperty("--theme-background", String(colors.background));
+          if (colors.surface) root.style.setProperty("--theme-surface", String(colors.surface));
+          if (colors.textPrimary) root.style.setProperty("--theme-text-primary", String(colors.textPrimary));
+          if (colors.border) root.style.setProperty("--theme-border", String(colors.border));
+          if (spacing.sm != null) root.style.setProperty("--theme-space-sm", String(spacing.sm) + "px");
+          if (spacing.md != null) root.style.setProperty("--theme-space-md", String(spacing.md) + "px");
+          if (radius.md != null) root.style.setProperty("--theme-radius-md", String(radius.md) + "px");
+          if (typography.base != null) {
+            root.style.setProperty("--theme-font-size-base", String(typography.base) + "px");
+          }
+        } catch (_error) {
+          // Ignore localStorage/theme parse errors.
+        }
+      })();
+    </script>
+    <title>Unite</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

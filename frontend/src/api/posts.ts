@@ -1,0 +1,53 @@
+import { apiClient } from "./client";
+
+export interface CreatePostInput {
+  content: string;
+  link_url?: string;
+  interest_tags?: string[];
+}
+
+export async function createPost(payload: CreatePostInput): Promise<unknown> {
+  const response = await apiClient.post("/posts/", payload);
+  return response.data;
+}
+
+export interface ReactPostInput {
+  action: "like" | "reply" | "repost" | "quote" | "bookmark" | "report";
+  content?: string;
+}
+
+export async function reactToPost(postId: number, payload: ReactPostInput): Promise<unknown> {
+  const response = await apiClient.post(`/posts/${postId}/react`, payload);
+  return response.data;
+}
+
+export interface SyncMetrics {
+  active_idempotency_records: number;
+  replay_total: number;
+  conflict_total: number;
+  sync_events?: {
+    success: number;
+    dropped: number;
+    retry: number;
+  };
+  latest_record_at: string | null;
+}
+
+export async function fetchSyncMetrics(): Promise<SyncMetrics> {
+  const response = await apiClient.get<SyncMetrics>("/posts/sync/metrics");
+  return response.data;
+}
+
+export interface SyncReplayEventPayload {
+  source: "client" | "service_worker";
+  kind: "create_post" | "react_post";
+  endpoint: string;
+  outcome: "success" | "dropped" | "retry";
+  status_code?: number;
+  idempotency_key?: string;
+  detail?: string;
+}
+
+export async function sendSyncReplayEvent(payload: SyncReplayEventPayload): Promise<void> {
+  await apiClient.post("/posts/sync/events", payload);
+}
