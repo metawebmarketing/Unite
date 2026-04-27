@@ -6,6 +6,7 @@ import { connectToUser, disconnectFromUser, fetchConnectionStatus } from "../api
 import { fetchPostsByUser, reactToPost, togglePostPin, type PostRecord } from "../api/posts";
 import { fetchPublicProfile, type PublicProfile } from "../api/profile";
 import { useAuthStore } from "../stores/auth";
+import { formatLocalizedPostDateTime } from "../utils/date-display";
 
 const route = useRoute();
 const router = useRouter();
@@ -21,6 +22,27 @@ const commonConnections = ref<Array<{ user_id: number; username: string; display
 const commonConnectionCount = ref(0);
 const pinnedPosts = computed(() => posts.value.filter((post) => Boolean(post.is_pinned)));
 const regularPosts = computed(() => posts.value.filter((post) => !post.is_pinned));
+const perActionRankRows = computed(() => {
+  const rows: Array<{ action: string; sum: number; count: number; avg: number }> = [];
+  const breakdown = profile.value?.rank_action_scores || {};
+  for (const [action, data] of Object.entries(breakdown)) {
+    rows.push({
+      action,
+      sum: Number(data?.sum || 0),
+      count: Number(data?.count || 0),
+      avg: Number(data?.avg || 0),
+    });
+  }
+  return rows.sort((a, b) => Math.abs(b.sum) - Math.abs(a.sum));
+});
+
+function formatScore(value: unknown): string {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return "0.00";
+  }
+  return numeric.toFixed(2);
+}
 
 function placeholderAvatar(name: string) {
   const initial = (name || "U").trim().charAt(0).toUpperCase() || "U";
@@ -179,11 +201,20 @@ watch(
         />
         <div>
           <h1>{{ profile.display_name || profile.username }}</h1>
-          <p class="profile-username">@{{ profile.username }}</p>
           <span v-if="!isOwnProfile && isConnected" class="ai-badge connected-badge">Connected</span>
           <button type="button" class="author-username-link profile-connections-link" @click="openConnections">
             {{ profile.connection_count }} connections
           </button>
+          <p v-if="authStore.isStaff" class="suggestion-meta">
+            Rank: {{ formatScore(profile.rank_overall_score) }} · Actions tracked:
+            {{ Number(profile.rank_last_500_count || 0) }}
+          </p>
+          <p v-if="authStore.isStaff && profile.rank_provider" class="suggestion-meta">Provider: {{ profile.rank_provider }}</p>
+          <div v-if="authStore.isStaff && perActionRankRows.length" class="suggestion-meta">
+            <span v-for="row in perActionRankRows.slice(0, 4)" :key="row.action">
+              {{ row.action }} {{ formatScore(row.sum) }} ({{ row.count }}) ·
+            </span>
+          </div>
           <p v-if="profile.bio">{{ profile.bio }}</p>
           <div v-if="!isOwnProfile && commonConnectionCount > 0" class="common-connections-row">
             <span>Common connections: </span>
@@ -215,6 +246,12 @@ watch(
       <h2 v-if="pinnedPosts.length">Pinned Posts</h2>
       <article v-for="post in pinnedPosts" :key="`pinned-${post.id}`" class="feed-item clickable-post-card" @click="openPost(post.id)">
         <p>{{ post.content }}</p>
+        <p v-if="formatLocalizedPostDateTime(post.created_at)" class="suggestion-meta">
+          {{ formatLocalizedPostDateTime(post.created_at) }}
+        </p>
+        <p v-if="authStore.isStaff" class="suggestion-meta">
+          {{ String(post.sentiment_label || "neutral") }} · {{ formatScore(post.sentiment_score) }}
+        </p>
         <div class="post-actions">
           <button
             v-if="isOwnProfile"
@@ -246,6 +283,12 @@ watch(
       <h2>Posts</h2>
       <article v-for="post in regularPosts" :key="post.id" class="feed-item clickable-post-card" @click="openPost(post.id)">
         <p>{{ post.content }}</p>
+        <p v-if="formatLocalizedPostDateTime(post.created_at)" class="suggestion-meta">
+          {{ formatLocalizedPostDateTime(post.created_at) }}
+        </p>
+        <p v-if="authStore.isStaff" class="suggestion-meta">
+          {{ String(post.sentiment_label || "neutral") }} · {{ formatScore(post.sentiment_score) }}
+        </p>
         <div class="post-actions">
           <button
             v-if="isOwnProfile"

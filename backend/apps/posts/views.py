@@ -8,10 +8,17 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.ranking import (
+    ensure_post_sentiment,
+    is_post_toxic,
+    record_profile_action_score,
+    score_post_sentiment,
+)
 from apps.ai_accounts.services import log_ai_action
 from apps.moderation.models import ModerationFlag
 from apps.moderation.services import is_content_blocked
 from apps.connections.models import Connection
+from apps.feed.sentiment_providers import score_sentiment_text
 from apps.posts.idempotency import (
     hash_request_payload,
     load_idempotent_response,
@@ -71,6 +78,7 @@ def build_post_queryset_for_user(user):
 
 
 def serialize_post_with_author(post, request) -> dict:
+    ensure_post_sentiment(post)
     payload = dict(PostSerializer(post).data)
     payload["interaction_counts"] = {
         "like": post.like_count,
@@ -93,6 +101,11 @@ def serialize_post_with_author(post, request) -> dict:
         bool(post.author.ai_account.ai_badge_enabled) if hasattr(post.author, "ai_account") else False
     )
     payload["author_is_connected"] = bool(getattr(post, "author_is_connected", False))
+    payload["author_profile_rank_score"] = float(
+        getattr(getattr(post.author, "profile", None), "rank_overall_score", 0.0) or 0.0
+    )
+    payload["sentiment_label"] = str(getattr(post, "sentiment_label", "neutral") or "neutral")
+    payload["sentiment_score"] = float(getattr(post, "sentiment_score", 0.0) or 0.0)
     return payload
 
 
@@ -235,9 +248,21 @@ class PostListCreateView(APIView):
                     )
                 ai_log(status.HTTP_429_TOO_MANY_REQUESTS, response_payload)
                 return Response(response_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
-        serializer.save(author=request.user)
+        created_post = serializer.save(author=request.user)
+        sentiment_label, sentiment_score = score_post_sentiment(created_post)
+        if hasattr(request.user, "profile"):
+            record_profile_action_score(
+                profile=request.user.profile,
+                action_type="post",
+                sentiment_label=sentiment_label,
+                sentiment_score=sentiment_score,
+                post=created_post,
+                metadata={"source": "post_create"},
+            )
         bump_user_feed_cache_version(request.user.id)
         response_payload = dict(serializer.data)
+        response_payload["sentiment_label"] = sentiment_label
+        response_payload["sentiment_score"] = sentiment_score
         if idempotency_key:
             save_idempotent_response(
                 user_id=request.user.id,
@@ -305,6 +330,8 @@ class PostReactView(APIView):
                 )
             ai_log(status.HTTP_404_NOT_FOUND, response_payload)
             return Response(response_payload, status=status.HTTP_404_NOT_FOUND)
+        post_sentiment_label, post_sentiment_score = ensure_post_sentiment(post)
+        post_is_toxic = is_post_toxic(post)
 
         singleton_actions = {
             PostInteraction.ActionType.LIKE,
@@ -320,6 +347,18 @@ class PostReactView(APIView):
                 defaults={"content": content},
             )
             if not created:
+                if hasattr(request.user, "profile") and action != PostInteraction.ActionType.REPORT:
+                    record_profile_action_score(
+                        profile=request.user.profile,
+                        action_type=action,
+                        sentiment_label=post_sentiment_label,
+                        sentiment_score=post_sentiment_score,
+                        post=post,
+                        interaction=interaction,
+                        metadata={"source": "post_react", "toggled_off": True},
+                        toggled_off=True,
+                        target_sentiment_score=post_sentiment_score,
+                    )
                 interaction.delete()
                 bump_user_feed_cache_version(request.user.id)
                 response_payload = {"toggled": "off", "action": action}
@@ -348,6 +387,22 @@ class PostReactView(APIView):
                     if hasattr(request.user, "profile")
                     else "global",
                     policy_version="user-action",
+                )
+            if hasattr(request.user, "profile"):
+                is_false_report = action == PostInteraction.ActionType.REPORT and (
+                    post_sentiment_label != "negative" and not post_is_toxic
+                )
+                record_profile_action_score(
+                    profile=request.user.profile,
+                    action_type=action,
+                    sentiment_label=post_sentiment_label,
+                    sentiment_score=post_sentiment_score,
+                    post=post,
+                    interaction=interaction,
+                    metadata={"source": "post_react", "is_false_report": is_false_report},
+                    is_false_report=is_false_report,
+                    is_toxic_report=action == PostInteraction.ActionType.REPORT and post_is_toxic,
+                    target_sentiment_score=post_sentiment_score,
                 )
             bump_user_feed_cache_version(request.user.id)
             response_payload = {"toggled": "on", "action": action}
@@ -398,13 +453,48 @@ class PostReactView(APIView):
                 ai_log(status.HTTP_422_UNPROCESSABLE_ENTITY, response_payload)
                 return Response(response_payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
             if action == PostInteraction.ActionType.REPLY:
-                Post.objects.create(
+                reply_post = Post.objects.create(
                     author=request.user,
                     parent_post=post,
                     content=content,
                     visibility=post.visibility,
                     interest_tags=post.interest_tags if isinstance(post.interest_tags, list) else [],
                 )
+                reply_sentiment_label, reply_sentiment_score = score_post_sentiment(reply_post)
+                if hasattr(request.user, "profile"):
+                    record_profile_action_score(
+                        profile=request.user.profile,
+                        action_type=PostInteraction.ActionType.REPLY,
+                        sentiment_label=reply_sentiment_label,
+                        sentiment_score=reply_sentiment_score,
+                        post=reply_post,
+                        interaction=interaction,
+                        metadata={"source": "post_react_reply"},
+                        target_sentiment_score=post_sentiment_score,
+                    )
+            elif action == PostInteraction.ActionType.QUOTE and hasattr(request.user, "profile"):
+                quote_sentiment = score_sentiment_text(content)
+                record_profile_action_score(
+                    profile=request.user.profile,
+                    action_type=PostInteraction.ActionType.QUOTE,
+                    sentiment_label=quote_sentiment.label,
+                    sentiment_score=quote_sentiment.score,
+                    post=post,
+                    interaction=interaction,
+                    metadata={"source": "post_react_quote"},
+                    target_sentiment_score=post_sentiment_score,
+                )
+        elif action == PostInteraction.ActionType.QUOTE and hasattr(request.user, "profile"):
+            record_profile_action_score(
+                profile=request.user.profile,
+                action_type=PostInteraction.ActionType.QUOTE,
+                sentiment_label=post_sentiment_label,
+                sentiment_score=post_sentiment_score,
+                post=post,
+                interaction=interaction,
+                metadata={"source": "post_react_quote_target"},
+                target_sentiment_score=post_sentiment_score,
+            )
         bump_user_feed_cache_version(request.user.id)
         response_payload = {"id": interaction.id, "action": action}
         if idempotency_key:
@@ -525,6 +615,7 @@ def _serialize_posts(serialized_posts: list[dict], queryset) -> list[dict]:
     for serialized in serialized_posts:
         post = mapped.get(serialized["id"])
         if post:
+            ensure_post_sentiment(post)
             serialized["interaction_counts"] = {
                 "like": post.like_count,
                 "reply": post.reply_count,
@@ -535,5 +626,7 @@ def _serialize_posts(serialized_posts: list[dict], queryset) -> list[dict]:
             serialized["has_bookmarked"] = bool(post.has_bookmarked)
             serialized["is_pinned"] = bool(post.is_pinned)
             serialized["author_is_connected"] = bool(getattr(post, "author_is_connected", False))
+            serialized["sentiment_label"] = str(getattr(post, "sentiment_label", "neutral") or "neutral")
+            serialized["sentiment_score"] = float(getattr(post, "sentiment_score", 0.0) or 0.0)
         result.append(serialized)
     return result

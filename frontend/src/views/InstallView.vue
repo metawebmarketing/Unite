@@ -20,7 +20,15 @@ const form = reactive({
   display_name: "",
   location: "",
   seed_demo_data: false,
+  seed_total_users: 1000,
+  seed_posts_per_user: 10,
 });
+
+function resolveSeedTotalPosts(): number {
+  const users = Math.max(1, Math.trunc(Number(form.seed_total_users) || 0));
+  const postsPerUser = Math.max(1, Math.trunc(Number(form.seed_posts_per_user) || 0));
+  return Math.max(1, Math.min(200000, users * postsPerUser));
+}
 
 const userProgressPercent = computed(() => {
   const total = installStatus.value?.seed_total_users || 0;
@@ -80,7 +88,16 @@ async function onSubmit() {
   statusText.value = "Installing...";
   isBusy.value = true;
   try {
-    const result = await runInstall(form);
+    const result = await runInstall({
+      username: form.username,
+      email: form.email,
+      password: form.password,
+      display_name: form.display_name,
+      location: form.location,
+      seed_demo_data: form.seed_demo_data,
+      seed_total_users: Math.max(1, Math.trunc(Number(form.seed_total_users) || 1)),
+      seed_total_posts: resolveSeedTotalPosts(),
+    });
     authStore.setAuthPayload(result.auth);
     await authStore.refreshUserMeta();
     authStore.persist();
@@ -125,8 +142,29 @@ onUnmounted(() => {
         <input v-model="form.location" placeholder="Default location (optional)" />
         <label>
           <input v-model="form.seed_demo_data" type="checkbox" />
-          Create demo data (1000 users with 10 posts each)
+          Create demo data
         </label>
+        <div v-if="form.seed_demo_data" class="stack">
+          <input
+            v-model.number="form.seed_total_users"
+            type="number"
+            min="1"
+            max="10000"
+            step="1"
+            placeholder="Total demo users"
+            required
+          />
+          <input
+            v-model.number="form.seed_posts_per_user"
+            type="number"
+            min="1"
+            max="5000"
+            step="1"
+            placeholder="Posts per demo user"
+            required
+          />
+          <p>Estimated total posts: {{ resolveSeedTotalPosts() }}</p>
+        </div>
         <button type="submit">Install Unite</button>
         <p v-if="statusText">{{ statusText }}</p>
         <div

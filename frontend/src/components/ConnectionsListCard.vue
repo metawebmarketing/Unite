@@ -251,9 +251,6 @@ export default {
         <button type="button" class="author-link" @click="openProfile(connection.user_id)">
           {{ connection.display_name }}
         </button>
-        <button type="button" class="author-username-link" @click="openProfile(connection.user_id)">
-          @{{ connection.username }}
-        </button>
         <p class="suggestion-meta">Shared interests: {{ connection.shared_interest_count }}</p>
       </div>
       <div class="post-menu-wrap">

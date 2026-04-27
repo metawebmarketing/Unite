@@ -6,6 +6,7 @@ import { connectToUser, disconnectFromUser } from "../api/connections";
 import { fetchPostDetail, reactToPost, togglePostPin, type PostDetailResponse } from "../api/posts";
 import { useAuthStore } from "../stores/auth";
 import { useFeedStore } from "../stores/feed";
+import { formatLocalizedPostDateTime } from "../utils/date-display";
 
 const route = useRoute();
 const router = useRouter();
@@ -22,6 +23,14 @@ const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
 const connectionStatusByAuthorId = ref<Record<number, boolean>>({});
 const pendingConnectionUserIds = ref<number[]>([]);
+
+function formatScore(value: unknown): string {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return "0.00";
+  }
+  return numeric.toFixed(2);
+}
 
 function placeholderAvatar(name: string) {
   const initial = (name || "U").trim().charAt(0).toUpperCase() || "U";
@@ -282,9 +291,15 @@ watch(
           <button type="button" class="author-link" @click="openAuthorProfile(detail.post.author_id)">
             {{ detail.post.author_display_name }}
           </button>
-          <button type="button" class="author-username-link" @click="openAuthorProfile(detail.post.author_id)">
-            @{{ detail.post.author_username }}
-          </button>
+          <span v-if="authStore.isStaff" class="suggestion-meta">
+            User {{ formatScore(detail.post.author_profile_rank_score) }}
+          </span>
+          <span v-if="formatLocalizedPostDateTime(detail.post.created_at)" class="suggestion-meta">
+            {{ formatLocalizedPostDateTime(detail.post.created_at) }}
+          </span>
+          <span v-if="authStore.isStaff" class="suggestion-meta">
+            {{ String(detail.post.sentiment_label || "neutral") }} · {{ formatScore(detail.post.sentiment_score) }}
+          </span>
         </span>
         <span v-if="detail.post.author_is_ai && detail.post.author_ai_badge_enabled" class="ai-badge">AI</span>
         <span
@@ -383,9 +398,15 @@ watch(
             <button type="button" class="author-link" @click="openAuthorProfile(reply.author_id)">
               {{ reply.author_display_name }}
             </button>
-            <button type="button" class="author-username-link" @click="openAuthorProfile(reply.author_id)">
-              @{{ reply.author_username }}
-            </button>
+            <span v-if="authStore.isStaff" class="suggestion-meta">
+              User {{ formatScore(reply.author_profile_rank_score) }}
+            </span>
+            <span v-if="formatLocalizedPostDateTime(reply.created_at)" class="suggestion-meta">
+              {{ formatLocalizedPostDateTime(reply.created_at) }}
+            </span>
+            <span v-if="authStore.isStaff" class="suggestion-meta">
+              {{ String(reply.sentiment_label || "neutral") }} · {{ formatScore(reply.sentiment_score) }}
+            </span>
           </span>
           <span v-if="reply.author_is_ai && reply.author_ai_badge_enabled" class="ai-badge">AI</span>
           <span

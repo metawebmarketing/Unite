@@ -13,6 +13,10 @@ export interface Profile {
   is_staff: boolean;
   profile_image_url: string;
   algorithm_profile_status: string;
+  rank_overall_score?: number;
+  rank_action_scores?: Record<string, { sum: number; count: number; avg: number }>;
+  rank_last_500_count?: number;
+  rank_provider?: string;
 }
 
 export interface PublicProfile extends Profile {

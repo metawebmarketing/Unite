@@ -21,6 +21,7 @@ export interface PostAuthorSummary {
   author_username: string;
   author_display_name: string;
   author_profile_image_url: string;
+  author_profile_rank_score?: number;
   author_is_ai: boolean;
   author_ai_badge_enabled: boolean;
   author_is_connected?: boolean;
@@ -30,6 +31,8 @@ export interface PostRecord extends PostAuthorSummary {
   id: number;
   content: string;
   created_at: string;
+  sentiment_label?: string;
+  sentiment_score?: number;
   is_pinned?: boolean;
   link_preview?: {
     url: string;

@@ -2,13 +2,16 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import override_settings
 from rest_framework.test import APITestCase
+from unittest.mock import patch
 
 from apps.accounts.models import Profile
 from apps.ads.models import AdSlotConfig
 from apps.ai_accounts.models import AiAccountProfile
 from apps.connections.models import Connection
+from apps.feed.sentiment_providers import CardiffLocalSentimentProvider
 from apps.moderation.models import ModerationFlag
 from apps.posts.models import Post
+from apps.feed.ranking import score_feed_items
 
 User = get_user_model()
 
@@ -132,6 +135,54 @@ class FeedApiTests(APITestCase):
         post_items = [item for item in response.data["items"] if item["item_type"] == "post"]
         self.assertEqual(post_items[0]["data"]["content"], "tech older")
 
+    def test_feed_payload_includes_sentiment_fields(self):
+        user = User.objects.create_user(username="sentiment_feed_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="SentimentFeedUser")
+        self.client.force_authenticate(user=user)
+        Post.objects.create(
+            author=user,
+            content="A positive and constructive update.",
+            interest_tags=["tech"],
+            sentiment_label="positive",
+            sentiment_score=0.75,
+        )
+
+        response = self.client.get("/api/v1/feed/?mode=both&page_size=1")
+        self.assertEqual(response.status_code, 200)
+        post_items = [item for item in response.data["items"] if item["item_type"] == "post"]
+        self.assertEqual(len(post_items), 1)
+        self.assertIn("sentiment_label", post_items[0]["data"])
+        self.assertIn("sentiment_score", post_items[0]["data"])
+        self.assertIn("author_profile_rank_score", post_items[0]["data"])
+
+    def test_cardiff_negative_non_hostile_maps_to_neutral(self):
+        provider = CardiffLocalSentimentProvider(
+            model_name="cardiffnlp/twitter-xlm-roberta-base-sentiment",
+            model_path="cardiffnlp/twitter-xlm-roberta-base-sentiment",
+            local_files_only=True,
+        )
+
+        with patch.object(provider, "_get_pipeline", return_value=lambda *_args, **_kwargs: [{"label": "negative", "score": 0.91}]):
+            result = provider.analyze_text(
+                "I disagree with this approach for fitness; the missing fallback is risky in high-traffic windows."
+            )
+
+        self.assertEqual(result.label, "neutral")
+        self.assertEqual(result.score, 0.0)
+
+    def test_cardiff_negative_hostile_stays_negative(self):
+        provider = CardiffLocalSentimentProvider(
+            model_name="cardiffnlp/twitter-xlm-roberta-base-sentiment",
+            model_path="cardiffnlp/twitter-xlm-roberta-base-sentiment",
+            local_files_only=True,
+        )
+
+        with patch.object(provider, "_get_pipeline", return_value=lambda *_args, **_kwargs: [{"label": "negative", "score": 0.88}]):
+            result = provider.analyze_text("You are an idiot and your argument is worthless.")
+
+        self.assertEqual(result.label, "negative")
+        self.assertLess(result.score, 0.0)
+
     def test_profile_interest_tokens_influence_ranking(self):
         user = User.objects.create_user(username="profile_interest_rank_user", password="Password123!")
         Profile.objects.create(
@@ -148,6 +199,93 @@ class FeedApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         post_items = [item for item in response.data["items"] if item["item_type"] == "post"]
         self.assertEqual(post_items[0]["data"]["content"], "tech older")
+
+    def test_negative_sentiment_is_downranked_despite_engagement(self):
+        ranked = score_feed_items(
+            user_context={"interest_tokens": []},
+            candidate_posts=[
+                {
+                    "id": 1,
+                    "interest_tags": [],
+                    "like_count": 14,
+                    "reply_count": 6,
+                    "sentiment_score": -0.9,
+                },
+                {
+                    "id": 2,
+                    "interest_tags": [],
+                    "like_count": 2,
+                    "reply_count": 1,
+                    "sentiment_score": 0.45,
+                },
+                {
+                    "id": 3,
+                    "interest_tags": [],
+                    "like_count": 2,
+                    "reply_count": 1,
+                    "sentiment_score": 0.0,
+                },
+            ],
+        )
+
+        ordered_ids = [int(item["id"]) for item in ranked]
+        self.assertEqual(ordered_ids[0], 2)
+        self.assertEqual(ordered_ids[1], 3)
+        self.assertEqual(ordered_ids[2], 1)
+
+    def test_author_profile_score_influences_ranking(self):
+        ranked = score_feed_items(
+            user_context={"interest_tokens": []},
+            candidate_posts=[
+                {
+                    "id": 11,
+                    "interest_tags": [],
+                    "like_count": 3,
+                    "reply_count": 2,
+                    "sentiment_score": 0.0,
+                    "author_profile_score": -4.5,
+                },
+                {
+                    "id": 12,
+                    "interest_tags": [],
+                    "like_count": 3,
+                    "reply_count": 2,
+                    "sentiment_score": 0.0,
+                    "author_profile_score": 2.8,
+                },
+            ],
+        )
+
+        ordered_ids = [int(item["id"]) for item in ranked]
+        self.assertEqual(ordered_ids[0], 12)
+        self.assertEqual(ordered_ids[1], 11)
+
+    def test_author_profile_score_outweighs_high_engagement(self):
+        ranked = score_feed_items(
+            user_context={"interest_tokens": []},
+            candidate_posts=[
+                {
+                    "id": 21,
+                    "interest_tags": [],
+                    "like_count": 250,
+                    "reply_count": 120,
+                    "sentiment_score": 0.0,
+                    "author_profile_score": -4.2,
+                },
+                {
+                    "id": 22,
+                    "interest_tags": [],
+                    "like_count": 0,
+                    "reply_count": 0,
+                    "sentiment_score": 0.0,
+                    "author_profile_score": 3.5,
+                },
+            ],
+        )
+
+        ordered_ids = [int(item["id"]) for item in ranked]
+        self.assertEqual(ordered_ids[0], 22)
+        self.assertEqual(ordered_ids[1], 21)
 
     def test_profile_interest_weights_influence_ranking(self):
         user = User.objects.create_user(username="profile_weight_rank_user", password="Password123!")

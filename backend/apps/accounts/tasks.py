@@ -4,7 +4,8 @@ from django.db.models import Count
 from django.utils import timezone
 from datetime import timedelta
 
-from apps.accounts.models import Profile
+from apps.accounts.models import Profile, ProfileActionScore
+from apps.accounts.ranking import recompute_profile_rank_rollups
 from apps.moderation.services import evaluate_profile_content
 from apps.posts.models import Post
 from apps.posts.models import PostInteraction
@@ -88,6 +89,7 @@ def _extract_post_tags(post: Post | None) -> list[str]:
 
 
 def _build_profile_vector(profile: Profile) -> dict:
+    recompute_profile_rank_rollups(profile)
     raw_interests = profile.interests if isinstance(profile.interests, list) else []
     interests = _normalize_tokens(raw_interests)
     interest_weights: dict[str, float] = {}
@@ -118,6 +120,18 @@ def _build_profile_vector(profile: Profile) -> dict:
         for token in _extract_post_tags(interaction.post):
             _bump_weight(interest_weights, token, weight)
 
+    recent_action_scores = list(
+        ProfileActionScore.objects.filter(profile=profile)
+        .only("action_type", "contribution_score")
+        .order_by("-created_at", "-id")[:500]
+    )
+    for action_score in recent_action_scores:
+        bonus = float(action_score.contribution_score) * 0.4
+        if bonus == 0:
+            continue
+        action_token = str(action_score.action_type).strip().lower()
+        _bump_weight(interest_weights, action_token, bonus)
+
     sorted_weights = sorted(interest_weights.items(), key=lambda item: (item[1], item[0]), reverse=True)
     ordered_tokens = [token for token, _weight in sorted_weights]
     top_weights = {token: weight for token, weight in sorted_weights[:100]}
@@ -131,6 +145,7 @@ def _build_profile_vector(profile: Profile) -> dict:
     constructive_ratio = (constructive_actions / interaction_count) if interaction_count else 0.0
     positive_dialogue_bias = min(0.95, round(0.55 + constructive_ratio * 0.4, 2))
     recency_weight = min(0.75, round(0.3 + min(interaction_count, 240) / 800, 2))
+    action_count = len(recent_action_scores)
 
     return {
         "interest_count": len(interests),
@@ -141,5 +156,10 @@ def _build_profile_vector(profile: Profile) -> dict:
         "signal_totals": {
             "authored_posts": len(recent_posts),
             "interaction_events": interaction_count,
+            "ranked_action_events": action_count,
         },
+        "rank_overall_score": float(profile.rank_overall_score),
+        "rank_action_scores": profile.rank_action_scores if isinstance(profile.rank_action_scores, dict) else {},
+        "rank_last_500_count": int(profile.rank_last_500_count or 0),
+        "rank_provider": profile.rank_provider or "",
     }

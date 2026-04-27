@@ -1,5 +1,5 @@
-const SHELL_CACHE = "unite-shell-v1";
-const FEED_CACHE = "unite-feed-v1";
+const SHELL_CACHE = "unite-shell-v2";
+const FEED_CACHE = "unite-feed-v2";
 const SHELL_ASSETS = ["/", "/manifest.webmanifest", "/favicon.svg"];
 const QUEUE_DB_NAME = "unite-offline-db";
 const QUEUE_DB_VERSION = 1;
@@ -32,7 +32,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (requestUrl.pathname.startsWith("/api/v1/feed")) {
-    event.respondWith(staleWhileRevalidate(event.request, FEED_CACHE));
+    event.respondWith(networkFirstWithCacheFallback(event.request, FEED_CACHE));
     return;
   }
   if (event.request.mode === "navigate") {
@@ -58,28 +58,27 @@ self.addEventListener("message", (event) => {
   }
 });
 
-async function staleWhileRevalidate(request, cacheName) {
+async function networkFirstWithCacheFallback(request, cacheName) {
   const cache = await caches.open(cacheName);
-  const cached = await cache.match(request);
-  const networkPromise = fetch(request)
-    .then((response) => {
-      if (response.ok) {
-        cache.put(request, response.clone());
-      }
-      return response;
-    })
-    .catch(() => null);
-  return (
-    cached ||
-    (await networkPromise) ||
-    new Response(
+  try {
+    const response = await fetch(request);
+    if (response.ok) {
+      cache.put(request, response.clone());
+    }
+    return response;
+  } catch {
+    const cached = await cache.match(request);
+    if (cached) {
+      return cached;
+    }
+    return new Response(
       JSON.stringify({ items: [], next_cursor: null, has_more: false, organic_count: 0 }),
       {
         status: 200,
         headers: { "Content-Type": "application/json" },
       },
-    )
-  );
+    );
+  }
 }
 
 function isMutableApiRequest(request, requestUrl) {

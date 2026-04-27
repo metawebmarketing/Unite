@@ -14,8 +14,10 @@ import {
 import { fetchPostsByUser, fetchSyncMetrics, togglePostPin, type PostRecord, type SyncMetrics } from "../api/posts";
 import { connectToUser, disconnectFromUser, fetchConnectionStatus } from "../api/connections";
 import { reactToPost } from "../api/posts";
+import { formatLocalizedPostDateTime } from "../utils/date-display";
 import { useAuthStore } from "../stores/auth";
 import { useFeedStore } from "../stores/feed";
+import { clearAllFeedCaches } from "../offline/feed-cache";
 import ComposeView from "./ComposeView.vue";
 import ProfileView from "./ProfileView.vue";
 import ThemeStudioView from "./ThemeStudioView.vue";
@@ -36,6 +38,8 @@ const trackedAdImpressions = new Set<string>();
 const demoActionStatus = ref("");
 const isResettingDemo = ref(false);
 const installSeedStatus = ref("");
+const demoSeedTotalUsers = ref(1000);
+const demoSeedPostsPerUser = ref(10);
 const showDemoProgressModal = ref(false);
 const demoProgressStatus = ref<InstallStatus | null>(null);
 let demoProgressTimer: ReturnType<typeof setInterval> | null = null;
@@ -56,6 +60,7 @@ const replyDraft = ref("");
 const replyTargetPostId = ref<number | null>(null);
 const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
+const feedOrdering = ref<"default" | "date_cluster">("default");
 
 onMounted(async () => {
   feedStore.hydrateBlockedUsers();
@@ -93,6 +98,9 @@ onMounted(async () => {
     try {
       const installStatus = await fetchInstallStatus();
       installSeedStatus.value = installStatus.seed_status;
+      demoSeedTotalUsers.value = installStatus.seed_total_users || 1000;
+      const seededPosts = Math.max(1, installStatus.seed_total_posts || 10000);
+      demoSeedPostsPerUser.value = Math.max(1, Math.round(seededPosts / Math.max(1, demoSeedTotalUsers.value)));
     } catch {
       installSeedStatus.value = "";
     }
@@ -186,6 +194,31 @@ function isModeActive(mode: "connections" | "suggestions" | "both" | "interest")
   return feedStore.mode === mode;
 }
 
+function dateClusterTimestamp(value: unknown): number {
+  if (typeof value !== "string" && !(value instanceof Date)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const parsed = value instanceof Date ? value : new Date(value);
+  const timestamp = parsed.getTime();
+  if (Number.isNaN(timestamp)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  parsed.setHours(0, 0, 0, 0);
+  return parsed.getTime();
+}
+
+function createdAtTimestamp(value: unknown): number {
+  if (typeof value !== "string" && !(value instanceof Date)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const parsed = value instanceof Date ? value : new Date(value);
+  const timestamp = parsed.getTime();
+  if (Number.isNaN(timestamp)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return timestamp;
+}
+
 function algorithmStatusMessage(status: string | null): string {
   if (status === "processing") {
     return "Personalized ranking profile is processing. Feed is running with fallback ranking.";
@@ -197,6 +230,14 @@ function algorithmStatusMessage(status: string | null): string {
     return "Personalized ranking profile failed to refresh. Feed is running with fallback ranking.";
   }
   return "";
+}
+
+function formatScore(value: unknown): string {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return "0.00";
+  }
+  return numeric.toFixed(2);
 }
 
 async function trackVisibleAdImpressions() {
@@ -560,6 +601,12 @@ function startDemoProgressPolling() {
       demoProgressStatus.value = status;
       installSeedStatus.value = status.seed_status;
       if (!["queued", "running"].includes(status.seed_status)) {
+        if (status.seed_status === "completed") {
+          await clearAllFeedCaches();
+          await feedStore.loadFeed(true, { force: true });
+          await trackVisibleAdImpressions();
+          updateVirtualWindow();
+        }
         if (demoProgressTimer) {
           clearInterval(demoProgressTimer);
           demoProgressTimer = null;
@@ -613,7 +660,14 @@ async function resetAndRegenerateDemo() {
   demoActionStatus.value = "";
   isResettingDemo.value = true;
   try {
-    const result = await resetDemoData();
+    await clearAllFeedCaches();
+    const normalizedUsers = Math.max(1, Math.trunc(Number(demoSeedTotalUsers.value) || 0));
+    const normalizedPostsPerUser = Math.max(1, Math.trunc(Number(demoSeedPostsPerUser.value) || 0));
+    const normalizedTotalPosts = Math.max(1, Math.min(200000, normalizedUsers * normalizedPostsPerUser));
+    const result = await resetDemoData({
+      seed_total_users: normalizedUsers,
+      seed_total_posts: normalizedTotalPosts,
+    });
     installSeedStatus.value = result.seed_status;
     demoActionStatus.value = `Removed ${result.removed_users} demo users and ${result.removed_posts} posts. Regeneration queued.`;
     try {
@@ -625,8 +679,8 @@ async function resetAndRegenerateDemo() {
         seed_requested: true,
         seed_status: result.seed_status || "queued",
         seed_task_id: result.seed_task_id || "",
-        seed_total_users: 1000,
-        seed_total_posts: 10000,
+        seed_total_users: normalizedUsers,
+        seed_total_posts: normalizedTotalPosts,
         seed_created_users: 0,
         seed_created_posts: 0,
         seed_last_message: "Regeneration queued.",
@@ -666,7 +720,7 @@ watch(
   { immediate: true },
 );
 
-const displayFeedItems = computed(() =>
+const filteredFeedItems = computed(() =>
   feedStore.items.filter((item) => {
     if (item.item_type !== "post") {
       return true;
@@ -675,6 +729,29 @@ const displayFeedItems = computed(() =>
     return !feedStore.isAuthorBlocked(authorId);
   }),
 );
+const displayFeedItems = computed(() => {
+  const items = filteredFeedItems.value;
+  if (feedOrdering.value !== "date_cluster") {
+    return items;
+  }
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      cluster: dateClusterTimestamp(item.data.created_at),
+      createdAt: createdAtTimestamp(item.data.created_at),
+    }))
+    .sort((left, right) => {
+      if (left.cluster !== right.cluster) {
+        return right.cluster - left.cluster;
+      }
+      if (left.createdAt !== right.createdAt) {
+        return right.createdAt - left.createdAt;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.item);
+});
 const isVirtualized = computed(() => displayFeedItems.value.length > 40);
 const visibleFeedEntries = computed(() => {
   if (!isVirtualized.value) {
@@ -705,6 +782,11 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
   } catch {
     // Ignore click telemetry failures.
   }
+}
+
+function onLogout() {
+  authStore.logout();
+  void router.push("/login");
 }
 </script>
 
@@ -755,6 +837,17 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
         <svg viewBox="0 0 24 24" class="icon"><rect x="6" y="7" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="12" r="1" fill="currentColor"/><circle cx="14" cy="12" r="1" fill="currentColor"/><path d="M12 7V4M9 17h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <span class="nav-link-label">AI Audit</span>
       </RouterLink>
+      <button
+        v-if="authStore.isAuthenticated"
+        type="button"
+        class="nav-icon-link nav-menu-button"
+        title="Logout"
+        aria-label="Logout"
+        @click="onLogout"
+      >
+        <svg viewBox="0 0 24 24" class="icon"><path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M14 8l5 4-5 4M19 12H9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="nav-link-label">Logout</span>
+      </button>
     </aside>
 
     <main class="feed">
@@ -802,6 +895,19 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
             <svg viewBox="0 0 24 24" class="icon"><path d="M12 21c4-2 7-5 7-9a7 7 0 1 0-14 0c0 4 3 7 7 9Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="11" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
           </button>
         </div>
+        <button
+          type="button"
+          class="tab-icon-button"
+          :class="{ active: feedOrdering === 'date_cluster' }"
+          title="Group by date"
+          aria-label="Group by date"
+          @click="feedOrdering = feedOrdering === 'default' ? 'date_cluster' : 'default'"
+        >
+          <svg viewBox="0 0 24 24" class="icon">
+            <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="M4 9h16M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
+        </button>
       </header>
       <div
         v-if="algorithmStatus && algorithmStatus !== 'ready'"
@@ -842,13 +948,15 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
               >
                 {{ item.data.author_display_name || "User" }}
               </button>
-              <button
-                type="button"
-                class="author-username-link"
-                @click.stop="openAuthorProfile(Number(item.data.author_id || 0))"
-              >
-                @{{ item.data.author_username || `user${item.data.author_id || ""}` }}
-              </button>
+              <span v-if="authStore.isStaff" class="suggestion-meta">
+                User {{ formatScore(item.data.author_profile_rank_score) }}
+              </span>
+              <span v-if="formatLocalizedPostDateTime(String(item.data.created_at || ''))" class="suggestion-meta">
+                {{ formatLocalizedPostDateTime(String(item.data.created_at || "")) }}
+              </span>
+              <span v-if="authStore.isStaff" class="suggestion-meta">
+                {{ String(item.data.sentiment_label || "neutral") }} · {{ formatScore(item.data.sentiment_score) }}
+              </span>
             </span>
             <span
               v-if="item.data.author_is_ai && item.data.author_ai_badge_enabled"
@@ -919,7 +1027,7 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
               <svg viewBox="0 0 24 24" class="icon"><path d="m8 3 8 8-2 2v6l-2-2-2 2v-6l-2-2 0 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <span>{{ item.data.is_pinned ? 1 : 0 }}</span>
             </button>
-            <span v-if="authStore.isStaff" class="rank-pill">Rank: {{ item.data.rank_score ?? 0 }}</span>
+            <span v-if="authStore.isStaff" class="rank-pill">Score: {{ item.data.rank_score ?? 0 }}</span>
           </div>
         </template>
         <template v-else-if="item.item_type === 'suggestion'">
@@ -936,11 +1044,9 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
               />
             </button>
             <span class="post-header-main">
+              <span class="suggestion-meta">Suggested Profile</span>
               <button type="button" class="author-link" @click.stop="openAuthorProfile(Number(item.data.user_id || 0))">
                 {{ item.data.display_name || "Suggested account" }}
-              </button>
-              <button type="button" class="author-username-link" @click.stop="openAuthorProfile(Number(item.data.user_id || 0))">
-                @{{ item.data.username || `user${item.data.user_id || ""}` }}
               </button>
             </span>
             <span v-if="item.data.is_ai_account && item.data.ai_badge_enabled" class="ai-badge">AI</span>
@@ -1019,9 +1125,15 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
                   <button type="button" class="author-link" @click.stop="openAuthorProfile(post.author_id)">
                     {{ post.author_display_name }}
                   </button>
-                  <button type="button" class="author-username-link" @click.stop="openAuthorProfile(post.author_id)">
-                    @{{ post.author_username }}
-                  </button>
+                  <span v-if="authStore.isStaff" class="suggestion-meta">
+                    User {{ formatScore(post.author_profile_rank_score) }}
+                  </span>
+                  <span v-if="formatLocalizedPostDateTime(post.created_at)" class="suggestion-meta">
+                    {{ formatLocalizedPostDateTime(post.created_at) }}
+                  </span>
+                  <span v-if="authStore.isStaff" class="suggestion-meta">
+                    {{ String(post.sentiment_label || "neutral") }} · {{ formatScore(post.sentiment_score) }}
+                  </span>
                 </span>
                 <span v-if="post.author_is_ai && post.author_ai_badge_enabled" class="ai-badge">AI</span>
                 <span
@@ -1081,6 +1193,23 @@ async function onAdClick(item: { data: Record<string, unknown> }) {
         <p>Ad interval: {{ feedStore.config?.ad_interval ?? 0 }}</p>
         <p>Max injection ratio: {{ feedStore.config?.max_injection_ratio ?? 0.5 }}</p>
         <template v-if="isLocalDev">
+        <input
+          v-model.number="demoSeedTotalUsers"
+          type="number"
+          min="1"
+          max="10000"
+          step="1"
+          placeholder="Demo users"
+        />
+        <input
+          v-model.number="demoSeedPostsPerUser"
+          type="number"
+          min="1"
+          max="5000"
+          step="1"
+          placeholder="Posts per user"
+        />
+          <p>Estimated total posts: {{ Math.max(1, Math.min(200000, Math.trunc(Number(demoSeedTotalUsers) || 1) * Math.trunc(Number(demoSeedPostsPerUser) || 1))) }}</p>
           <button @click="resetAndRegenerateDemo" :disabled="isResettingDemo">
             {{ isResettingDemo ? "Resetting demo data..." : "Reset & regenerate demo data" }}
           </button>

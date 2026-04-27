@@ -21,6 +21,8 @@ export interface InstallRunInput {
   display_name?: string;
   location?: string;
   seed_demo_data?: boolean;
+  seed_total_users?: number;
+  seed_total_posts?: number;
 }
 
 export interface InstallRunResult {
@@ -54,7 +56,7 @@ export async function runInstall(payload: InstallRunInput): Promise<InstallRunRe
   return response.data;
 }
 
-export async function resetDemoData(): Promise<DemoDataResetResult> {
-  const response = await apiClient.post<DemoDataResetResult>("/install/demo-data/reset", {});
+export async function resetDemoData(payload?: { seed_total_users?: number; seed_total_posts?: number }): Promise<DemoDataResetResult> {
+  const response = await apiClient.post<DemoDataResetResult>("/install/demo-data/reset", payload || {});
   return response.data;
 }

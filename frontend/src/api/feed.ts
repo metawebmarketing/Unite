@@ -10,6 +10,7 @@ export interface FeedItem {
     author_username?: string;
     author_display_name?: string;
     author_profile_image_url?: string;
+    author_profile_rank_score?: number;
     author_is_ai?: boolean;
     author_ai_badge_enabled?: boolean;
     content?: string;
@@ -24,6 +25,8 @@ export interface FeedItem {
     has_liked?: boolean;
     has_bookmarked?: boolean;
     is_pinned?: boolean;
+    sentiment_label?: string;
+    sentiment_score?: number;
     interaction_counts?: {
       like: number;
       reply: number;

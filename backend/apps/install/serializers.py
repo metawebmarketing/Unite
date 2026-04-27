@@ -25,6 +25,8 @@ class InstallRunSerializer(serializers.Serializer):
     display_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     location = serializers.CharField(max_length=120, required=False, allow_blank=True)
     seed_demo_data = serializers.BooleanField(required=False, default=False)
+    seed_total_users = serializers.IntegerField(required=False, min_value=1, max_value=10000)
+    seed_total_posts = serializers.IntegerField(required=False, min_value=1, max_value=200000)
 
     def validate_username(self, value: str) -> str:
         lowered = value.strip()
@@ -41,3 +43,14 @@ class InstallRunSerializer(serializers.Serializer):
     def validate_password(self, value: str) -> str:
         validate_password(value)
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if not attrs.get("seed_demo_data"):
+            attrs["seed_total_users"] = 0
+            attrs["seed_total_posts"] = 0
+            return attrs
+
+        attrs["seed_total_users"] = int(attrs.get("seed_total_users") or 1000)
+        attrs["seed_total_posts"] = int(attrs.get("seed_total_posts") or 10000)
+        return attrs

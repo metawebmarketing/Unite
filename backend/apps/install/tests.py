@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 from django.test import override_settings
@@ -6,6 +7,8 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import Profile
 from apps.install.models import InstallState
+from apps.install.demo_corpus import load_demo_post_corpus
+from apps.install.tasks import seed_demo_data_task
 from apps.posts.models import Post
 
 User = get_user_model()
@@ -29,6 +32,8 @@ class InstallApiTests(APITestCase):
                 "password": "Password123!",
                 "display_name": "Master Admin",
                 "seed_demo_data": True,
+                "seed_total_users": 24,
+                "seed_total_posts": 180,
             },
             format="json",
         )
@@ -41,7 +46,12 @@ class InstallApiTests(APITestCase):
         self.assertTrue(state.seed_requested)
         self.assertEqual(state.seed_status, "queued")
         self.assertEqual(state.seed_task_id, "task-123")
+        self.assertEqual(state.seed_total_users, 24)
+        self.assertEqual(state.seed_total_posts, 180)
         mocked_delay.assert_called_once()
+        _, kwargs = mocked_delay.call_args
+        self.assertEqual(kwargs["total_users"], 24)
+        self.assertEqual(kwargs["total_posts"], 180)
 
     def test_install_run_fails_after_first_completion(self):
         first = self.client.post(
@@ -80,12 +90,22 @@ class InstallApiTests(APITestCase):
         Post.objects.create(author=demo_user, content="demo")
         mocked_delay.return_value.id = "seed-2"
         self.client.force_authenticate(user=admin)
-        response = self.client.post("/api/v1/install/demo-data/reset", {}, format="json")
+        response = self.client.post(
+            "/api/v1/install/demo-data/reset",
+            {"seed_total_users": 12, "seed_total_posts": 77},
+            format="json",
+        )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["removed_users"], 1)
         self.assertEqual(response.data["removed_posts"], 1)
         self.assertFalse(User.objects.filter(username="demo_user_0001").exists())
         mocked_delay.assert_called_once()
+        state = InstallState.objects.get(id=1)
+        self.assertEqual(state.seed_total_users, 12)
+        self.assertEqual(state.seed_total_posts, 77)
+        _, kwargs = mocked_delay.call_args
+        self.assertEqual(kwargs["total_users"], 12)
+        self.assertEqual(kwargs["total_posts"], 77)
 
     @override_settings(UNITE_ALLOW_LOCAL_DEMO_RESET=False)
     def test_demo_data_reset_disabled_outside_debug(self):
@@ -99,3 +119,49 @@ class InstallApiTests(APITestCase):
         self.client.force_authenticate(user=admin)
         response = self.client.post("/api/v1/install/demo-data/reset", {}, format="json")
         self.assertEqual(response.status_code, 404)
+
+    @patch("apps.install.tasks.score_sentiment_text")
+    @patch("apps.install.tasks.score_post_sentiment")
+    @patch("apps.install.tasks.random.Random.random", return_value=0.0)
+    def test_seed_demo_data_runs_content_through_sentiment_module(
+        self,
+        _mock_random,
+        mock_score_post_sentiment,
+        mock_score_sentiment_text,
+    ):
+        def fake_score_post_sentiment(post):
+            Post.objects.filter(id=post.id).update(sentiment_label="neutral", sentiment_score=0.0)
+            post.sentiment_label = "neutral"
+            post.sentiment_score = 0.0
+            return "neutral", 0.0
+
+        mock_score_post_sentiment.side_effect = fake_score_post_sentiment
+        mock_score_sentiment_text.return_value = SimpleNamespace(label="neutral", score=0.0)
+
+        result = seed_demo_data_task(install_state_id=1, total_users=3, total_posts=6)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertGreaterEqual(result["created_posts"], 6)
+        self.assertGreater(result["created_reply_posts"], 0)
+        # Every seeded post and generated reply-post should be scored via sentiment module.
+        self.assertGreaterEqual(
+            mock_score_post_sentiment.call_count,
+            result["created_posts"] + result["created_reply_posts"],
+        )
+        # Quote actions should score quote text through the provider path as well.
+        self.assertGreater(mock_score_sentiment_text.call_count, 0)
+
+    def test_demo_corpus_has_expected_size(self):
+        corpus = load_demo_post_corpus()
+        self.assertGreaterEqual(len(corpus), 10000)
+
+    def test_demo_corpus_contains_toxic_examples(self):
+        corpus = load_demo_post_corpus()
+        toxic_markers = ("idiot", "incompetent", "dumb", "garbage", "awful", "trash")
+        toxic_hits = 0
+        for entry in corpus:
+            content = str(entry.get("content", "")).lower()
+            reply_negative = str(entry.get("reply_negative", "")).lower()
+            if any(marker in content or marker in reply_negative for marker in toxic_markers):
+                toxic_hits += 1
+        self.assertGreaterEqual(toxic_hits, 200)

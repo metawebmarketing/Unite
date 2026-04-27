@@ -63,6 +63,13 @@ body {
   padding: 0 0.75rem;
 }
 
+.nav-menu-button {
+  width: 100%;
+  color: #f7f7ff;
+  cursor: pointer;
+  text-align: left;
+}
+
 .icon {
   width: 18px;
   height: 18px;

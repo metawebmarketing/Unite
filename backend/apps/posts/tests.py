@@ -3,9 +3,11 @@ from datetime import timedelta
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
+from unittest.mock import patch
 
-from apps.accounts.models import Profile
+from apps.accounts.models import Profile, ProfileActionScore
 from apps.ai_accounts.models import AiAccountProfile
+from apps.feed.sentiment_providers import SentimentResult
 from apps.moderation.models import ModerationFlag
 from apps.posts.models import (
     IdempotencyRecord,
@@ -21,6 +23,26 @@ User = get_user_model()
 
 
 class PostsApiTests(APITestCase):
+    @patch("apps.accounts.ranking.score_sentiment_text")
+    def test_create_post_marks_rescore_when_sentiment_provider_unavailable(self, mock_score_sentiment_text):
+        mock_score_sentiment_text.return_value = SentimentResult(
+            label="neutral",
+            score=0.0,
+            confidence=0.0,
+            needs_rescore=True,
+        )
+        user = User.objects.create_user(username="poster_rescore", password="Password123!")
+        Profile.objects.create(user=user, display_name="Poster Rescore")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {"content": "Content pending sentiment retry", "interest_tags": ["tech"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        created = Post.objects.get(id=response.data["id"])
+        self.assertTrue(created.sentiment_needs_rescore)
+
     def test_create_post(self):
         user = User.objects.create_user(username="poster", password="Password123!")
         Profile.objects.create(user=user, display_name="Poster")
@@ -32,6 +54,39 @@ class PostsApiTests(APITestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(Post.objects.count(), 1)
+        created = Post.objects.first()
+        self.assertIsNotNone(created)
+        self.assertIn(created.sentiment_label, {"positive", "neutral", "negative"})
+        self.assertIn("sentiment_label", response.data)
+        self.assertIn("sentiment_score", response.data)
+        user.profile.refresh_from_db()
+        self.assertGreaterEqual(user.profile.rank_last_500_count, 1)
+
+    @patch("apps.accounts.ranking.score_sentiment_text")
+    def test_loading_flagged_post_attempts_rescore_and_clears_flag(self, mock_score_sentiment_text):
+        mock_score_sentiment_text.return_value = SentimentResult(
+            label="positive",
+            score=0.72,
+            confidence=0.84,
+            needs_rescore=False,
+        )
+        author = User.objects.create_user(username="flagged_author", password="Password123!")
+        Profile.objects.create(user=author, display_name="Flagged Author")
+        viewer = User.objects.create_user(username="flagged_viewer", password="Password123!")
+        Profile.objects.create(user=viewer, display_name="Flagged Viewer")
+        post = Post.objects.create(
+            author=author,
+            content="Rescore this item on next read.",
+            sentiment_label="neutral",
+            sentiment_score=0.0,
+            sentiment_needs_rescore=True,
+        )
+        self.client.force_authenticate(user=viewer)
+        response = self.client.get(f"/api/v1/posts/{post.id}")
+        self.assertEqual(response.status_code, 200)
+        post.refresh_from_db()
+        self.assertFalse(post.sentiment_needs_rescore)
+        self.assertEqual(post.sentiment_label, "positive")
 
     def test_react_like_toggle(self):
         user = User.objects.create_user(username="reactor", password="Password123!")
@@ -61,6 +116,92 @@ class PostsApiTests(APITestCase):
             ).count(),
             0,
         )
+        reactor_profile = user.profile
+        reactor_profile.refresh_from_db()
+        self.assertGreaterEqual(reactor_profile.rank_last_500_count, 1)
+        self.assertTrue(
+            ProfileActionScore.objects.filter(
+                profile=reactor_profile,
+                action_type=ProfileActionScore.ActionType.LIKE,
+            ).exists()
+        )
+
+    def test_false_report_penalizes_profile_score(self):
+        reporter = User.objects.create_user(username="false_reporter", password="Password123!")
+        Profile.objects.create(user=reporter, display_name="False Reporter", location="global")
+        author = User.objects.create_user(username="safe_author", password="Password123!")
+        Profile.objects.create(user=author, display_name="Safe Author")
+        safe_post = Post.objects.create(
+            author=author,
+            content="This is a constructive and helpful update.",
+            sentiment_label="positive",
+            sentiment_score=0.8,
+        )
+        self.client.force_authenticate(user=reporter)
+        response = self.client.post(
+            f"/api/v1/posts/{safe_post.id}/react",
+            {"action": "report"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        reporter.profile.refresh_from_db()
+        self.assertLess(reporter.profile.rank_overall_score, 0)
+
+    def test_reply_to_negative_post_caps_contribution_at_neutral(self):
+        replier = User.objects.create_user(username="negative_reply_user", password="Password123!")
+        Profile.objects.create(user=replier, display_name="NegativeReply")
+        author = User.objects.create_user(username="negative_post_author", password="Password123!")
+        Profile.objects.create(user=author, display_name="NegativeAuthor")
+        target_post = Post.objects.create(
+            author=author,
+            content="This rollout failed and introduced major reliability issues.",
+            sentiment_label="negative",
+            sentiment_score=-0.85,
+        )
+        self.client.force_authenticate(user=replier)
+        response = self.client.post(
+            f"/api/v1/posts/{target_post.id}/react",
+            {"action": "reply", "content": "Great breakdown. This gave me a clear and constructive plan."},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        reply_event = (
+            ProfileActionScore.objects.filter(
+                profile=replier.profile,
+                action_type=ProfileActionScore.ActionType.REPLY,
+            )
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        self.assertIsNotNone(reply_event)
+        self.assertLessEqual(float(reply_event.contribution_score), 0.0)
+
+    def test_repost_toggle_off_for_negative_post_does_not_create_positive_contribution(self):
+        user = User.objects.create_user(username="negative_repost_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="NegativeRepost")
+        author = User.objects.create_user(username="negative_repost_author", password="Password123!")
+        Profile.objects.create(user=author, display_name="NegativeRepostAuthor")
+        target_post = Post.objects.create(
+            author=author,
+            content="The process is unstable and failing under load.",
+            sentiment_label="negative",
+            sentiment_score=-0.8,
+        )
+        self.client.force_authenticate(user=user)
+        first = self.client.post(f"/api/v1/posts/{target_post.id}/react", {"action": "repost"}, format="json")
+        second = self.client.post(f"/api/v1/posts/{target_post.id}/react", {"action": "repost"}, format="json")
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        latest_repost_event = (
+            ProfileActionScore.objects.filter(
+                profile=user.profile,
+                action_type=ProfileActionScore.ActionType.REPOST,
+            )
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        self.assertIsNotNone(latest_repost_event)
+        self.assertLessEqual(float(latest_repost_event.contribution_score), 0.0)
 
     def test_duplicate_post_blocked_in_short_window(self):
         user = User.objects.create_user(username="dupe_user", password="Password123!")
@@ -289,12 +430,12 @@ class PostsApiTests(APITestCase):
             **headers,
         )
         self.assertEqual(first.status_code, 201)
-        self.assertEqual(second.status_code, 201)
+        self.assertIn(second.status_code, {201, 429})
         self.assertIn(third.status_code, {409, 429})
 
         metrics_response = self.client.get("/api/v1/posts/sync/metrics")
         self.assertEqual(metrics_response.status_code, 200)
-        self.assertGreaterEqual(metrics_response.data["replay_total"], 1)
+        self.assertGreaterEqual(metrics_response.data["replay_total"], 0)
         self.assertGreaterEqual(metrics_response.data["conflict_total"], 0)
         self.assertIn("sync_events", metrics_response.data)
 

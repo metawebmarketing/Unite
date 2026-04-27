@@ -12,9 +12,11 @@ from PIL import Image
 from rest_framework.test import APITestCase
 from unittest.mock import patch
 
-from apps.accounts.models import Profile
+from apps.accounts.models import Profile, ProfileActionScore
+from apps.accounts.ranking import record_profile_action_score
 from apps.accounts.tasks import generate_algorithm_profile, refresh_active_profile_scores
 from apps.ai_accounts.models import AiAccountProfile
+from apps.feed.sentiment_providers import get_sentiment_provider, score_sentiment_text
 from apps.posts.models import Post
 from apps.posts.models import PostInteraction
 
@@ -22,6 +24,10 @@ User = get_user_model()
 
 
 class AccountsApiTests(APITestCase):
+    def tearDown(self):
+        get_sentiment_provider.cache_clear()
+        super().tearDown()
+
     def test_signup_and_login(self):
         signup_payload = {
             "username": "alpha",
@@ -282,3 +288,30 @@ class AccountsApiTests(APITestCase):
         self.assertEqual(result["status"], "scheduled")
         self.assertEqual(result["count"], 1)
         mocked_delay.assert_called_once_with(active_profile.id, active_profile.location or "global")
+
+    def test_profile_rollup_uses_latest_500_actions(self):
+        user = User.objects.create_user(
+            username="rolling_user",
+            email="rolling@example.com",
+            password="Password123!",
+        )
+        profile = Profile.objects.create(user=user, display_name="Rolling User")
+        for _ in range(520):
+            record_profile_action_score(
+                profile=profile,
+                action_type=ProfileActionScore.ActionType.LIKE,
+                sentiment_label="positive",
+                sentiment_score=0.5,
+                metadata={"test": "rolling"},
+            )
+        profile.refresh_from_db()
+        self.assertEqual(profile.rank_last_500_count, 500)
+        self.assertIn("like", profile.rank_action_scores)
+
+    @override_settings(UNITE_SENTIMENT_RANKING_PROVIDER="unsupported-provider")
+    def test_sentiment_provider_marks_neutral_for_rescore_when_provider_invalid(self):
+        get_sentiment_provider.cache_clear()
+        result = score_sentiment_text("This is a great and helpful day.")
+        self.assertEqual(result.label, "neutral")
+        self.assertEqual(float(result.score), 0.0)
+        self.assertTrue(result.needs_rescore)

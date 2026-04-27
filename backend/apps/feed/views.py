@@ -11,6 +11,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.ranking import ensure_post_sentiment
 from apps.connections.models import Connection
 from apps.feed.cache_utils import get_user_feed_cache_version
 from apps.feed.serializers import FeedConfigSerializer, FeedPageSerializer
@@ -30,6 +31,7 @@ ALLOWED_POST_DATA_FIELDS = {
     "author_is_ai",
     "author_ai_badge_enabled",
     "author_is_connected",
+    "author_profile_rank_score",
     "content",
     "interest_tags",
     "created_at",
@@ -39,6 +41,8 @@ ALLOWED_POST_DATA_FIELDS = {
     "has_liked",
     "has_bookmarked",
     "is_pinned",
+    "sentiment_label",
+    "sentiment_score",
 }
 
 
@@ -145,7 +149,7 @@ class FeedListView(APIView):
         )
 
         posts_queryset = (
-            Post.objects.select_related("author")
+            Post.objects.select_related("author", "author__profile")
             .prefetch_related("attachments")
             .annotate(
                 like_count=Count(
@@ -238,6 +242,8 @@ class FeedListView(APIView):
             selected_posts = list(posts_queryset[: page_size + 1])
         has_more = len(selected_posts) > page_size
         page_posts = selected_posts[:page_size]
+        for post in page_posts:
+            ensure_post_sentiment(post)
         cursor_anchor_post = page_posts[-1] if page_posts else None
         user_context = {}
         if hasattr(request.user, "profile"):
@@ -254,6 +260,10 @@ class FeedListView(APIView):
                 "interest_tags": post.interest_tags if isinstance(post.interest_tags, list) else [],
                 "like_count": post.like_count,
                 "reply_count": post.reply_count,
+                "sentiment_score": float(getattr(post, "sentiment_score", 0.0) or 0.0),
+                "author_profile_score": float(
+                    getattr(getattr(post.author, "profile", None), "rank_overall_score", 0.0) or 0.0
+                ),
             }
             for post in page_posts
         ]
@@ -279,6 +289,9 @@ class FeedListView(APIView):
                 if hasattr(post.author, "ai_account")
                 else False,
                 "author_is_connected": bool(getattr(post, "author_is_connected", False)),
+                "author_profile_rank_score": float(
+                    getattr(getattr(post.author, "profile", None), "rank_overall_score", 0.0) or 0.0
+                ),
                 "content": post.content or "No content provided.",
                 "interest_tags": post.interest_tags if isinstance(post.interest_tags, list) else [],
                 "created_at": post.created_at.isoformat(),
@@ -293,6 +306,8 @@ class FeedListView(APIView):
                 "has_liked": bool(post.has_liked),
                 "has_bookmarked": bool(post.has_bookmarked),
                 "is_pinned": bool(post.is_pinned),
+                "sentiment_label": str(getattr(post, "sentiment_label", "neutral") or "neutral"),
+                "sentiment_score": float(getattr(post, "sentiment_score", 0.0) or 0.0),
             }
             if requested_fields is not None:
                 post_data = {key: value for key, value in post_data.items() if key in requested_fields}

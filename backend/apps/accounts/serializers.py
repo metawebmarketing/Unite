@@ -93,6 +93,10 @@ class ProfileSerializer(serializers.ModelSerializer):
             "connection_count",
             "algorithm_profile_status",
             "algorithm_vector",
+            "rank_overall_score",
+            "rank_action_scores",
+            "rank_last_500_count",
+            "rank_provider",
             "updated_at",
         ]
         read_only_fields = [
@@ -105,6 +109,10 @@ class ProfileSerializer(serializers.ModelSerializer):
             "connection_count",
             "algorithm_profile_status",
             "algorithm_vector",
+            "rank_overall_score",
+            "rank_action_scores",
+            "rank_last_500_count",
+            "rank_provider",
             "updated_at",
         ]
 

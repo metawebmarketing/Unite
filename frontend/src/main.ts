@@ -2,7 +2,7 @@ import { createPinia } from "pinia";
 import { createApp } from "vue";
 
 import App from "./App.vue";
-import { apiClient } from "./api/client";
+import { apiClient, getAuthToken } from "./api/client";
 import { fetchInstallStatus } from "./api/install";
 import router from "./router";
 import { useAuthStore } from "./stores/auth";
@@ -26,18 +26,55 @@ if (cachedInstallState === "false") {
 }
 
 let redirectingUnauthorized = false;
+let sessionValidationPromise: Promise<boolean> | null = null;
+
+async function confirmSessionStillValid(): Promise<boolean> {
+  const token = getAuthToken();
+  const baseURL = String(apiClient.defaults.baseURL || "").replace(/\/$/, "");
+  if (!token || !baseURL) {
+    return false;
+  }
+  try {
+    const response = await fetch(`${baseURL}/profile/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (response.status === 401 || response.status === 403) {
+      return false;
+    }
+    return true;
+  } catch {
+    // Treat transient network failures as non-auth failures.
+    return true;
+  }
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const statusCode = Number(error?.response?.status || 0);
-    if (statusCode === 401) {
-      authStore.handleUnauthorized();
-      if (!redirectingUnauthorized && router.currentRoute.value.name !== "login") {
-        redirectingUnauthorized = true;
-        try {
-          await router.replace({ name: "login" });
-        } finally {
-          redirectingUnauthorized = false;
+    const requestHeaders = (error?.config?.headers || {}) as Record<string, unknown>;
+    const hasAuthHeader =
+      typeof requestHeaders.Authorization === "string" ||
+      typeof requestHeaders.authorization === "string";
+    if (statusCode === 401 && hasAuthHeader) {
+      if (!sessionValidationPromise) {
+        sessionValidationPromise = confirmSessionStillValid().finally(() => {
+          sessionValidationPromise = null;
+        });
+      }
+      const isSessionValid = await sessionValidationPromise;
+      if (!isSessionValid) {
+        authStore.handleUnauthorized();
+        if (!redirectingUnauthorized && router.currentRoute.value.name !== "login") {
+          redirectingUnauthorized = true;
+          try {
+            await router.replace({ name: "login" });
+          } finally {
+            redirectingUnauthorized = false;
+          }
         }
       }
     }

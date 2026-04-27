@@ -15,6 +15,7 @@ from apps.install.models import InstallState
 from apps.install.serializers import InstallRunSerializer, InstallStatusSerializer
 from apps.install.tasks import seed_demo_data_task
 from apps.posts.models import Post
+from apps.feed.cache_utils import bump_user_feed_cache_version
 
 User = get_user_model()
 
@@ -24,7 +25,7 @@ def _get_install_state() -> InstallState:
     return state
 
 
-def _dispatch_seed_task(*, install_state_id: int, total_users: int, posts_per_user: int) -> str:
+def _dispatch_seed_task(*, install_state_id: int, total_users: int, total_posts: int) -> str:
     if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
         task_id = f"local-{uuid.uuid4().hex[:12]}"
 
@@ -34,7 +35,7 @@ def _dispatch_seed_task(*, install_state_id: int, total_users: int, posts_per_us
                 seed_demo_data_task(
                     install_state_id=install_state_id,
                     total_users=total_users,
-                    posts_per_user=posts_per_user,
+                    total_posts=total_posts,
                 )
             finally:
                 close_old_connections()
@@ -50,7 +51,7 @@ def _dispatch_seed_task(*, install_state_id: int, total_users: int, posts_per_us
     result = seed_demo_data_task.delay(
         install_state_id=install_state_id,
         total_users=total_users,
-        posts_per_user=posts_per_user,
+        total_posts=total_posts,
     )
     return str(result.id)
 
@@ -112,8 +113,8 @@ class InstallRunView(APIView):
             state.seed_requested = bool(serializer.validated_data.get("seed_demo_data", False))
             state.seed_status = "queued" if state.seed_requested else "not_requested"
             state.seed_task_id = ""
-            state.seed_total_users = 1000 if state.seed_requested else 0
-            state.seed_total_posts = 10000 if state.seed_requested else 0
+            state.seed_total_users = serializer.validated_data.get("seed_total_users", 0)
+            state.seed_total_posts = serializer.validated_data.get("seed_total_posts", 0)
             state.seed_created_users = 0
             state.seed_created_posts = 0
             state.seed_last_message = "Seed queued." if state.seed_requested else ""
@@ -135,7 +136,11 @@ class InstallRunView(APIView):
             )
 
         if state.seed_requested:
-            task_id = _dispatch_seed_task(install_state_id=state.id, total_users=1000, posts_per_user=10)
+            task_id = _dispatch_seed_task(
+                install_state_id=state.id,
+                total_users=state.seed_total_users,
+                total_posts=state.seed_total_posts,
+            )
             InstallState.objects.filter(id=state.id).update(
                 seed_task_id=task_id,
                 seed_status="queued",
@@ -159,16 +164,30 @@ class DemoDataResetView(APIView):
     def post(self, request):
         if not getattr(settings, "UNITE_ALLOW_LOCAL_DEMO_RESET", False):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        requested_total_users = request.data.get("seed_total_users", None)
+        requested_total_posts = request.data.get("seed_total_posts", None)
         demo_users = User.objects.filter(username__startswith="demo_user_")
         removed_users = demo_users.count()
         removed_posts = Post.objects.filter(author_id__in=demo_users.values_list("id", flat=True)).count()
         demo_users.delete()
 
         state = _get_install_state()
+        seed_total_users = state.seed_total_users or 1000
+        seed_total_posts = state.seed_total_posts or 10000
+        try:
+            if requested_total_users is not None:
+                seed_total_users = max(1, min(10000, int(requested_total_users)))
+            if requested_total_posts is not None:
+                seed_total_posts = max(1, min(200000, int(requested_total_posts)))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "seed_total_users and seed_total_posts must be valid integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         state.seed_requested = True
         state.seed_status = "queued"
-        state.seed_total_users = 1000
-        state.seed_total_posts = 10000
+        state.seed_total_users = seed_total_users
+        state.seed_total_posts = seed_total_posts
         state.seed_created_users = 0
         state.seed_created_posts = 0
         state.seed_last_message = "Seed regeneration queued."
@@ -184,9 +203,14 @@ class DemoDataResetView(APIView):
                 "updated_at",
             ]
         )
-        task_id = _dispatch_seed_task(install_state_id=state.id, total_users=1000, posts_per_user=10)
+        task_id = _dispatch_seed_task(
+            install_state_id=state.id,
+            total_users=state.seed_total_users,
+            total_posts=state.seed_total_posts,
+        )
         state.seed_task_id = task_id
         state.save(update_fields=["seed_task_id", "updated_at"])
+        bump_user_feed_cache_version(request.user.id)
         return Response(
             {
                 "removed_users": removed_users,

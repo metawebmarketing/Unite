@@ -8,6 +8,19 @@ Implementation scaffold for the Unite social network plan.
 2. `python backend/manage.py migrate`
 3. `python backend/manage.py runserver`
 
+### Sentiment ranking runtime requirements
+
+- Real-time sentiment ranking uses the Hugging Face Transformers pipeline with:
+  - model: `cardiffnlp/twitter-xlm-roberta-base-sentiment`
+  - packages: `transformers`, `sentencepiece`, and `protobuf` (included in `backend/requirements.txt`)
+- Runtime is configured for fully local inference (`UNITE_SENTIMENT_LOCAL_FILES_ONLY = True`), so the backend does not call Hugging Face Hub during normal server operation.
+- Ensure model files are present locally in the Hugging Face cache or set `UNITE_SENTIMENT_MODEL_PATH` to a local model directory.
+- PyTorch must be available in the same Python environment as the backend server.
+- Quick runtime check:
+  - `python -c "import torch, transformers; print(torch.__version__, transformers.__version__)"`
+- If PyTorch is missing in your environment, install it from the official selector:
+  - [PyTorch Get Started](https://pytorch.org/get-started/locally/)
+
 ## Frontend setup
 
 1. `cd frontend`
@@ -33,7 +46,9 @@ Implementation scaffold for the Unite social network plan.
 
 - On a fresh database, open `http://localhost:5173/install`.
 - Create the master admin account.
-- Optional: enable the checkbox to queue demo seed data (`1000` users with `10` posts each) in the background.
+- Optional: enable the checkbox to queue demo seed data (configurable users/posts) in the background.
+- Demo post/reply/quote text now comes from `backend/apps/install/data/demo_posts_10000.json` (10,000 fixed entries) to emulate realistic content instead of ad-hoc template text.
+- Seeded demo posts/interactions now also generate ranking signals and profile rollups, so seeded accounts immediately include sentiment/rank data.
 - After install completes once, `/install` is locked and the app uses normal login/signup flows.
 
 ## Local test routes

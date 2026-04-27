@@ -1,0 +1,14 @@
+---
+description: Install missing libraries when dependency errors appear
+alwaysApply: true
+---
+
+# Missing Library Installation
+
+- When a command fails due to missing modules/packages (for example `ModuleNotFoundError`, import failure, missing binary, or runtime tokenizer dependency), install the missing dependency before continuing.
+- Use the project package manager for the relevant stack:
+  - Python: `python -m pip install <package>` (or add to `backend/requirements.txt` when backend runtime depends on it).
+  - Frontend: `npm install <package>`.
+- Verify installation with a quick import/version check or by re-running the failing command.
+- If the dependency is required for ongoing project runtime (not a one-off local tool), persist it in the appropriate dependency manifest (`backend/requirements.txt` or frontend `package.json`).
+- Do not skip installation by silently falling back to degraded behavior when the required package can be installed.

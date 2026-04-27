@@ -21,6 +21,9 @@ class Post(models.Model):
         default=Visibility.PUBLIC,
     )
     interest_tags = models.JSONField(default=list, blank=True)
+    sentiment_label = models.CharField(max_length=16, default="neutral")
+    sentiment_score = models.FloatField(default=0.0)
+    sentiment_needs_rescore = models.BooleanField(default=False)
     is_pinned = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

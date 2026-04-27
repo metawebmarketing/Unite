@@ -20,6 +20,10 @@ interface FeedState {
   pendingActionKeys: string[];
 }
 
+interface LoadFeedOptions {
+  force?: boolean;
+}
+
 export const useFeedStore = defineStore("feed", {
   state: (): FeedState => ({
     mode: "both",
@@ -89,9 +93,15 @@ export const useFeedStore = defineStore("feed", {
     async loadConfig() {
       this.config = await fetchFeedConfig();
     },
-    async loadFeed(reset = true) {
+    async loadFeed(reset = true, options?: LoadFeedOptions) {
       if (this.isLoading) {
-        return;
+        if (!(options?.force && reset)) {
+          return;
+        }
+        // Wait for the in-flight request so forced refresh cannot be skipped.
+        while (this.isLoading) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
       }
       if (!reset && !this.hasMore) {
         return;

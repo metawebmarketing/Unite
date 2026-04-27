@@ -9,6 +9,7 @@ interface CachedFeedPage {
 
 const FEED_CACHE_PREFIX = "unite:feed-cache:";
 const FEED_CACHE_TTL_MS = 60_000;
+const FEED_SW_CACHE_NAMES = ["unite-feed-v1", "unite-feed-v2"];
 
 export function readCachedFeed(cacheKey: string): CachedFeedPage | null {
   try {
@@ -38,4 +39,39 @@ export function writeCachedFeed(cacheKey: string, payload: Omit<CachedFeedPage, 
   } catch {
     // ignore quota/storage errors in best-effort cache
   }
+}
+
+export function clearLocalFeedCache(): void {
+  try {
+    const keysToDelete: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith(FEED_CACHE_PREFIX)) {
+        keysToDelete.push(key);
+      }
+    }
+    for (const key of keysToDelete) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore storage access errors
+  }
+}
+
+export async function clearServiceWorkerFeedCache(): Promise<void> {
+  try {
+    if (!("caches" in window)) {
+      return;
+    }
+    for (const cacheName of FEED_SW_CACHE_NAMES) {
+      await window.caches.delete(cacheName);
+    }
+  } catch {
+    // ignore cache storage errors
+  }
+}
+
+export async function clearAllFeedCaches(): Promise<void> {
+  clearLocalFeedCache();
+  await clearServiceWorkerFeedCache();
 }

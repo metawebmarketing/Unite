@@ -1,0 +1,24 @@
+---
+description: Enforce centralized real-time sentiment ranking updates for user actions
+globs: backend/apps/**/*.{py}
+alwaysApply: false
+---
+
+# Real-Time Ranking Consistency
+
+- Treat sentiment/profile ranking as a swappable provider module. Do not hardcode one model path in endpoint logic.
+- Use centralized ranking methods for action scoring and profile rollups. Endpoint handlers must call shared ranking services, not duplicate score math inline.
+- Any code change touching post/action flows must keep ranking updates in sync for relevant actions:
+  - post
+  - reply
+  - repost/share
+  - like
+  - quote
+  - bookmark
+  - report
+- Profile rank rollups must stay based on the latest 500 action events and include:
+  - overall summed score
+  - per-action score breakdown
+  - provider metadata
+- Reporting non-negative/non-toxic content must apply a penalty contribution.
+- LLM integrations are optional add-ons; baseline ranking/profile generation must function without LLM modules installed.

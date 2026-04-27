@@ -30,9 +30,22 @@ class PostSerializer(serializers.ModelSerializer):
             "attachments",
             "interaction_counts",
             "has_liked",
+            "sentiment_label",
+            "sentiment_score",
+            "sentiment_needs_rescore",
             "created_at",
         ]
-        read_only_fields = ["id", "author_id", "created_at", "link_preview", "interaction_counts", "has_liked"]
+        read_only_fields = [
+            "id",
+            "author_id",
+            "created_at",
+            "link_preview",
+            "interaction_counts",
+            "has_liked",
+            "sentiment_label",
+            "sentiment_score",
+            "sentiment_needs_rescore",
+        ]
 
     def validate_link_url(self, value):
         if not value:

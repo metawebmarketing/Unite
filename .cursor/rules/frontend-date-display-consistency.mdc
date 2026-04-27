@@ -1,0 +1,14 @@
+---
+description: Enforce a single frontend date display formatter
+globs: frontend/src/**/*.{ts,vue}
+alwaysApply: false
+---
+
+# Frontend Date Display Consistency
+
+- Use `formatLocalizedPostDateTime()` from `frontend/src/utils/date-display.ts` for all user-facing date/time strings.
+- Do not call `toLocaleString()`, `toLocaleDateString()`, `toLocaleTimeString()`, or `Intl.DateTimeFormat` directly inside views/components.
+- For post/reply timestamps:
+  - under 24 hours old: display hour-based relative text (for example `3h ago`);
+  - 24+ hours old: display localized human-readable date/time.
+- If a new date display use case appears, extend `formatLocalizedPostDateTime()` (or add a helper in the same module) and reuse it everywhere.
