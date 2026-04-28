@@ -61,6 +61,7 @@ body {
   justify-content: flex-start;
   gap: 0.55rem;
   padding: 0 0.75rem;
+  position: relative;
 }
 
 .nav-menu-button {
@@ -81,6 +82,21 @@ body {
   font-size: 0.92rem;
   color: #f7f7ff;
   white-space: nowrap;
+}
+
+.nav-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.3rem;
 }
 
 .feed {
@@ -388,6 +404,312 @@ button {
   height: 34px;
 }
 
+.dm-start-thread-row {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+}
+
+.dm-recipient-wrap {
+  position: relative;
+}
+
+.dm-suggestion-box {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  background: #0c0e15;
+  border: 1px solid #2f3242;
+  border-radius: 12px;
+  padding: 0.35rem;
+  z-index: 20;
+  display: grid;
+  gap: 0.2rem;
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.dm-suggestion-item {
+  text-align: left;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.message-input-wrap {
+  position: relative;
+}
+
+.mention-input-shell {
+  border: 1px solid #2e3040;
+  border-radius: 10px;
+  background: #0d0f16;
+  padding: 0.45rem 0.55rem;
+}
+
+.mention-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.mention-input-shell textarea {
+  border: none;
+  background: transparent;
+  padding: 0;
+  min-height: 88px;
+  resize: vertical;
+}
+
+.mention-input-shell textarea:focus {
+  outline: none;
+}
+
+.mention-rich-input {
+  border: 1px solid #2e3040;
+  border-radius: 10px;
+  background: #0d0f16;
+  padding: 0.6rem;
+  min-height: 96px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
+}
+
+.mention-rich-input:empty::before {
+  content: attr(data-placeholder);
+  color: #8f93aa;
+}
+
+.mention-tag-link,
+.mention-inline-link {
+  border: none;
+  background: transparent;
+  color: #7cb3ff;
+  text-decoration: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.mention-tag-link:hover,
+.mention-inline-link:hover {
+  text-decoration: underline;
+}
+
+.mention-content-wrap {
+  white-space: pre-wrap;
+}
+
+.suggestion-box {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  background: #0c0e15;
+  border: 1px solid #2f3242;
+  border-radius: 12px;
+  padding: 0.35rem;
+  z-index: 22;
+  display: grid;
+  gap: 0.2rem;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.suggestion-item {
+  border: none;
+  background: transparent;
+  color: inherit;
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  border-radius: 10px;
+  padding: 0.45rem 0.5rem;
+}
+
+.suggestion-item:hover {
+  background: #151a27;
+}
+
+.suggestion-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid #2a2d3d;
+}
+
+.suggestion-text {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.composer-attachment-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.post-attachment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.5rem;
+}
+
+.post-attachment-card {
+  position: relative;
+  border: 1px solid #2d3142;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #11141e;
+}
+
+.post-attachment-card img,
+.post-attachment-card video {
+  width: 100%;
+  max-height: 280px;
+  object-fit: cover;
+  display: block;
+}
+
+.post-attachment-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid #303445;
+  background: rgba(5, 7, 12, 0.85);
+  color: #f7f8ff;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.dm-thread-card {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.dm-thread-preview {
+  margin: 0;
+}
+
+.dm-unread-pill {
+  margin-left: auto;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid #3b66d6;
+  color: #cfe0ff;
+  background: #1b2a52;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.dm-thread-page {
+  max-width: 920px;
+}
+
+.notifications-page {
+  max-width: 920px;
+}
+
+.dm-thread-scroll {
+  max-height: 62vh;
+  overflow: auto;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.dm-thread-top-anchor {
+  padding-top: 0;
+}
+
+.dm-message-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.dm-message-row.own {
+  justify-content: flex-end;
+}
+
+.dm-message-bubble {
+  max-width: min(72ch, 82%);
+  border: 1px solid #2a2d3d;
+  border-radius: 16px;
+  background: #171822;
+  padding: 0.65rem 0.75rem;
+}
+
+.dm-message-row.own .dm-message-bubble {
+  background: #1d2942;
+  border-color: #364a74;
+}
+
+.dm-message-bubble p {
+  margin: 0;
+}
+
+.dm-message-meta {
+  margin-top: 0.45rem !important;
+}
+
+.dm-attachment-list,
+.dm-attachment-draft-list {
+  margin: 0.45rem 0 0;
+  padding-left: 1rem;
+}
+
+.dm-attachment-link {
+  color: #bcd2ff;
+}
+
+.dm-compose-card {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.dm-compose-card h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.dm-attachment-draft-row {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  gap: 0.5rem;
+}
+
+.dm-attachment-draft-row select {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0d0f16;
+  border: 1px solid #2e3040;
+  color: #f8f8ff;
+  border-radius: 10px;
+  padding: 0.6rem;
+}
+
 .connections-filter-menu {
   position: absolute;
   right: 0;
@@ -487,6 +809,24 @@ button {
   max-height: 90vh;
   overflow: auto;
   position: relative;
+}
+
+.mention-host-card {
+  overflow: visible;
+}
+
+.filter-modal-card {
+  width: min(720px, 100%);
+  max-height: 90vh;
+  overflow: visible;
+}
+
+.global-error-overlay {
+  z-index: 70;
+}
+
+.global-error-card {
+  border: 1px solid #5b2d3a;
 }
 
 .modal-actions {

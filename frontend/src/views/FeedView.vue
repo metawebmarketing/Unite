@@ -11,19 +11,32 @@ import {
   type InterestPost,
   type TopInterest,
 } from "../api/interests";
-import { fetchPostsByUser, fetchSyncMetrics, togglePostPin, type PostRecord, type SyncMetrics } from "../api/posts";
+import {
+  fetchPostsByUser,
+  fetchSyncMetrics,
+  togglePostPin,
+  uploadPostImage,
+  type PostRecord,
+  type SyncMetrics,
+} from "../api/posts";
 import { connectToUser, disconnectFromUser, fetchConnectionStatus } from "../api/connections";
 import { reactToPost } from "../api/posts";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
 import { useAuthStore } from "../stores/auth";
+import { useErrorModalStore } from "../stores/error-modal";
 import { useFeedStore } from "../stores/feed";
+import { useNotificationsStore } from "../stores/notifications";
 import { clearAllFeedCaches } from "../offline/feed-cache";
+import MentionComposerInput from "../components/MentionComposerInput.vue";
+import MentionTextContent from "../components/MentionTextContent.vue";
 import ComposeView from "./ComposeView.vue";
 import ProfileView from "./ProfileView.vue";
 import ThemeStudioView from "./ThemeStudioView.vue";
 
 const feedStore = useFeedStore();
 const authStore = useAuthStore();
+const notificationsStore = useNotificationsStore();
+const errorModalStore = useErrorModalStore();
 const route = useRoute();
 const router = useRouter();
 const activeModal = ref<"compose" | "profile" | "theme-studio" | null>(null);
@@ -42,7 +55,6 @@ const demoSeedTotalUsers = ref(1000);
 const demoSeedPostsPerUser = ref(10);
 const showDemoProgressModal = ref(false);
 const demoProgressStatus = ref<InstallStatus | null>(null);
-let demoProgressTimer: ReturnType<typeof setInterval> | null = null;
 const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
 const virtualWindowStart = ref(0);
 const virtualWindowEnd = ref(0);
@@ -56,13 +68,29 @@ const suggestionPreviewPosts = ref<Record<number, PostRecord[]>>({});
 const pendingConnectionUserIds = ref<number[]>([]);
 const connectionStatusByUserId = ref<Record<number, boolean>>({});
 const showReplyModal = ref(false);
+const showShareModal = ref(false);
 const replyDraft = ref("");
+const replyLinkDraft = ref("");
 const replyTargetPostId = ref<number | null>(null);
+const replyAttachmentInputRef = ref<HTMLInputElement | null>(null);
+const replyAttachments = ref<Array<{ media_type: "image"; media_url: string }>>([]);
+const isReplyUploadingImage = ref(false);
+const replyTaggedUserIds = ref<number[]>([]);
+const shareDraft = ref("");
+const shareLinkDraft = ref("");
+const shareTargetPostId = ref<number | null>(null);
+const shareAttachmentInputRef = ref<HTMLInputElement | null>(null);
+const shareAttachments = ref<Array<{ media_type: "image"; media_url: string }>>([]);
+const isShareUploadingImage = ref(false);
+const shareTaggedUserIds = ref<number[]>([]);
+const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
 const feedOrdering = ref<"default" | "date_cluster">("default");
+const notificationUnreadCount = computed(() => Math.max(0, Number(notificationsStore.unreadCount || 0)));
 
 onMounted(async () => {
+  notificationsStore.ensureRealtimeConnection();
   feedStore.hydrateBlockedUsers();
   observer = new IntersectionObserver(
     async (entries) => {
@@ -160,10 +188,6 @@ onUnmounted(() => {
   }
   if (scrollHandler) {
     window.removeEventListener("scroll", scrollHandler);
-  }
-  if (demoProgressTimer) {
-    clearInterval(demoProgressTimer);
-    demoProgressTimer = null;
   }
   document.body.style.overflow = "";
 });
@@ -291,6 +315,130 @@ function hasLinkPreviewContent(linkPreview: unknown): boolean {
   return Boolean(preview.title || preview.description || preview.host || preview.url);
 }
 
+function getPostAttachments(value: unknown): Array<{ media_type: "image"; media_url: string }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => ({
+      media_type: String((item as { media_type?: string }).media_type || "").trim().toLowerCase(),
+      media_url: String((item as { media_url?: string }).media_url || "").trim(),
+    }))
+    .filter(
+      (item): item is { media_type: "image"; media_url: string } =>
+        Boolean(item.media_url) && item.media_type === "image",
+    );
+}
+
+function resolveTaggedUserIds(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => Number(entry || 0))
+    .filter((entry) => Number.isInteger(entry) && entry > 0);
+}
+
+function resetReplyComposerState() {
+  replyDraft.value = "";
+  replyLinkDraft.value = "";
+  replyAttachments.value = [];
+  isReplyUploadingImage.value = false;
+  replyTaggedUserIds.value = [];
+}
+
+function resetShareComposerState() {
+  shareDraft.value = "";
+  shareLinkDraft.value = "";
+  shareAttachments.value = [];
+  isShareUploadingImage.value = false;
+  shareTaggedUserIds.value = [];
+}
+
+function openReplyImagePicker() {
+  replyAttachmentInputRef.value?.click();
+}
+
+function openShareImagePicker() {
+  shareAttachmentInputRef.value?.click();
+}
+
+async function onReplyImageSelected(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const files = input?.files ? Array.from(input.files) : [];
+  if (!files.length) {
+    return;
+  }
+  if (!navigator.onLine) {
+    errorModalStore.showError("Image upload requires an online connection.");
+    if (input) {
+      input.value = "";
+    }
+    return;
+  }
+  isReplyUploadingImage.value = true;
+  try {
+    const file = files[0];
+    if (file && String(file.type || "").toLowerCase().startsWith("image/")) {
+      if (Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES) {
+        errorModalStore.showError("Image is too large. Maximum size is 5 MB.");
+        return;
+      }
+      const uploaded = await uploadPostImage(file);
+      replyAttachments.value = [uploaded];
+    }
+  } catch {
+    errorModalStore.showError("Unable to upload image. Please retry.");
+  } finally {
+    isReplyUploadingImage.value = false;
+    if (input) {
+      input.value = "";
+    }
+  }
+}
+
+async function onShareImageSelected(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const files = input?.files ? Array.from(input.files) : [];
+  if (!files.length) {
+    return;
+  }
+  if (!navigator.onLine) {
+    errorModalStore.showError("Image upload requires an online connection.");
+    if (input) {
+      input.value = "";
+    }
+    return;
+  }
+  isShareUploadingImage.value = true;
+  try {
+    const file = files[0];
+    if (file && String(file.type || "").toLowerCase().startsWith("image/")) {
+      if (Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES) {
+        errorModalStore.showError("Image is too large. Maximum size is 5 MB.");
+        return;
+      }
+      const uploaded = await uploadPostImage(file);
+      shareAttachments.value = [uploaded];
+    }
+  } catch {
+    errorModalStore.showError("Unable to upload image. Please retry.");
+  } finally {
+    isShareUploadingImage.value = false;
+    if (input) {
+      input.value = "";
+    }
+  }
+}
+
+function removeReplyAttachment(index: number) {
+  replyAttachments.value = replyAttachments.value.filter((_, currentIndex) => currentIndex !== index);
+}
+
+function removeShareAttachment(index: number) {
+  shareAttachments.value = shareAttachments.value.filter((_, currentIndex) => currentIndex !== index);
+}
+
 function closeModal() {
   activeModal.value = null;
   if (route.query.modal) {
@@ -333,12 +481,14 @@ function blockAuthor(authorId: number) {
 
 async function onReply(postId: number) {
   replyTargetPostId.value = postId;
-  replyDraft.value = "";
+  resetReplyComposerState();
   showReplyModal.value = true;
 }
 
 async function onRepost(postId: number) {
-  await feedStore.toggleReaction(postId, "repost");
+  shareTargetPostId.value = postId;
+  resetShareComposerState();
+  showShareModal.value = true;
 }
 
 async function onBookmark(postId: number) {
@@ -348,19 +498,56 @@ async function onBookmark(postId: number) {
 async function submitReplyModal() {
   const postId = replyTargetPostId.value;
   const draft = replyDraft.value.trim();
-  if (!postId || !draft) {
+  if (!postId || !draft || isReplyUploadingImage.value) {
     return;
   }
-  await feedStore.replyToPost(postId, draft);
-  showReplyModal.value = false;
-  replyDraft.value = "";
-  replyTargetPostId.value = null;
+  if (replyAttachments.value.length && !navigator.onLine) {
+    errorModalStore.showError("Image attachments require an online connection.");
+    return;
+  }
+  await feedStore.replyToPost(postId, {
+    content: draft,
+    link_url: replyLinkDraft.value.trim() || undefined,
+    attachments: replyAttachments.value.length ? replyAttachments.value : undefined,
+    tagged_user_ids: replyTaggedUserIds.value,
+  });
+  closeReplyModal();
+}
+
+async function submitShareModal() {
+  const postId = shareTargetPostId.value;
+  if (!postId || isShareUploadingImage.value) {
+    return;
+  }
+  if (shareAttachments.value.length && !navigator.onLine) {
+    errorModalStore.showError("Image attachments require an online connection.");
+    return;
+  }
+  const payload = {
+    content: shareDraft.value.trim(),
+    link_url: shareLinkDraft.value.trim() || undefined,
+    attachments: shareAttachments.value.length ? shareAttachments.value : undefined,
+    tagged_user_ids: shareTaggedUserIds.value,
+  };
+  const hasQuotePayload =
+    Boolean(payload.content) ||
+    Boolean(payload.link_url) ||
+    Boolean((payload.attachments || []).length) ||
+    Boolean(payload.tagged_user_ids.length);
+  await reactToPost(postId, hasQuotePayload ? { action: "quote", ...payload } : { action: "repost" });
+  closeShareModal();
 }
 
 function closeReplyModal() {
   showReplyModal.value = false;
-  replyDraft.value = "";
   replyTargetPostId.value = null;
+  resetReplyComposerState();
+}
+
+function closeShareModal() {
+  showShareModal.value = false;
+  shareTargetPostId.value = null;
+  resetShareComposerState();
 }
 
 function closeCopyLinkModal() {
@@ -517,19 +704,9 @@ async function onPreviewReply(post: PostRecord) {
 }
 
 async function onPreviewRepost(post: PostRecord) {
-  const previousCount = Number(post.interaction_counts?.repost || 0);
-  post.interaction_counts = {
-    ...post.interaction_counts,
-    repost: previousCount > 0 ? Math.max(0, previousCount - 1) : previousCount + 1,
-  };
-  try {
-    await reactToPost(post.id, { action: "repost" });
-  } catch {
-    post.interaction_counts = {
-      ...post.interaction_counts,
-      repost: previousCount,
-    };
-  }
+  shareTargetPostId.value = post.id;
+  resetShareComposerState();
+  showShareModal.value = true;
 }
 
 async function onPreviewBookmark(post: PostRecord) {
@@ -590,41 +767,6 @@ const demoCreatedRecordCount = computed(
 const demoTotalRecordCount = computed(
   () => (demoProgressStatus.value?.seed_total_users || 0) + (demoProgressStatus.value?.seed_total_posts || 0),
 );
-
-function startDemoProgressPolling() {
-  if (demoProgressTimer) {
-    return;
-  }
-  demoProgressTimer = setInterval(async () => {
-    try {
-      const status = await fetchInstallStatus();
-      demoProgressStatus.value = status;
-      installSeedStatus.value = status.seed_status;
-      if (!["queued", "running"].includes(status.seed_status)) {
-        if (status.seed_status === "completed") {
-          await clearAllFeedCaches();
-          await feedStore.loadFeed(true, { force: true });
-          await trackVisibleAdImpressions();
-          updateVirtualWindow();
-        }
-        if (demoProgressTimer) {
-          clearInterval(demoProgressTimer);
-          demoProgressTimer = null;
-        }
-        setTimeout(() => {
-          showDemoProgressModal.value = false;
-        }, 500);
-      }
-    } catch {
-      if (demoProgressStatus.value) {
-        demoProgressStatus.value = {
-          ...demoProgressStatus.value,
-          seed_last_message: "Waiting for progress update...",
-        };
-      }
-    }
-  }, 900);
-}
 
 async function maybeLoadMoreFromScrollFallback() {
   if (isLoadingMoreFromFallback.value || feedStore.isLoading || !feedStore.hasMore) {
@@ -687,7 +829,7 @@ async function resetAndRegenerateDemo() {
       };
     }
     showDemoProgressModal.value = true;
-    startDemoProgressPolling();
+    notificationsStore.ensureRealtimeConnection();
   } catch (error: unknown) {
     const response = (error as { response?: { status?: number; data?: { detail?: string } } }).response;
     if (response?.status === 403) {
@@ -713,9 +855,33 @@ watch(
 );
 
 watch(
-  [activeModal, showDemoProgressModal, showReplyModal, showCopyLinkModal],
-  ([modalValue, progressModalValue, replyModalValue, copyModalValue]) => {
-    document.body.style.overflow = modalValue || progressModalValue || replyModalValue || copyModalValue ? "hidden" : "";
+  () => notificationsStore.installStatusRealtime,
+  async (status) => {
+    if (!status) {
+      return;
+    }
+    installSeedStatus.value = status.seed_status;
+    demoProgressStatus.value = status;
+    if (showDemoProgressModal.value && !["queued", "running"].includes(status.seed_status)) {
+      if (status.seed_status === "completed") {
+        await clearAllFeedCaches();
+        await feedStore.loadFeed(true, { force: true });
+        await trackVisibleAdImpressions();
+        updateVirtualWindow();
+      }
+      setTimeout(() => {
+        showDemoProgressModal.value = false;
+      }, 500);
+    }
+  },
+  { deep: true },
+);
+
+watch(
+  [activeModal, showDemoProgressModal, showReplyModal, showShareModal, showCopyLinkModal],
+  ([modalValue, progressModalValue, replyModalValue, shareModalValue, copyModalValue]) => {
+    document.body.style.overflow =
+      modalValue || progressModalValue || replyModalValue || shareModalValue || copyModalValue ? "hidden" : "";
   },
   { immediate: true },
 );
@@ -804,6 +970,15 @@ function onLogout() {
       <RouterLink to="/connections" class="nav-icon-link" title="Connections" aria-label="Connections">
         <svg viewBox="0 0 24 24" class="icon"><path d="M7.5 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3Zm9 0a3 3 0 1 0-3-3 3 3 0 0 0 3 3ZM2.5 20a5 5 0 0 1 10 0M11.5 20a5 5 0 0 1 10 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="nav-link-label">Connections</span>
+      </RouterLink>
+      <RouterLink to="/messages" class="nav-icon-link" title="Messages" aria-label="Messages">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H7l-4 3V12a8.5 8.5 0 1 1 18 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="nav-link-label">Messages</span>
+      </RouterLink>
+      <RouterLink to="/notifications" class="nav-icon-link" title="Notifications" aria-label="Notifications">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M12 4a5 5 0 0 0-5 5v2.8l-1.8 2.5a1 1 0 0 0 .8 1.7h12a1 1 0 0 0 .8-1.7L17 11.8V9a5 5 0 0 0-5-5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 18a2.5 2.5 0 0 0 5 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span class="nav-link-label">Notifications</span>
+        <span v-if="notificationUnreadCount > 0" class="nav-badge">{{ notificationUnreadCount }}</span>
       </RouterLink>
       <RouterLink :to="{ name: 'feed', query: { modal: 'compose' } }" class="nav-icon-link" title="Compose" aria-label="Compose">
         <svg viewBox="0 0 24 24" class="icon"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5a2.1 2.1 0 0 0-3 0L4 15.5V20Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -994,7 +1169,21 @@ function onLogout() {
               </div>
             </div>
           </h3>
-          <p class="post-content-link">{{ item.data.content }}</p>
+          <MentionTextContent
+            :content="String(item.data.content || '')"
+            :tagged-user-ids="resolveTaggedUserIds(item.data.tagged_user_ids)"
+            @mention-click="openAuthorProfile"
+          />
+          <div v-if="getPostAttachments(item.data.attachments).length" class="post-attachment-grid">
+            <div
+              v-for="(attachment, attachmentIndex) in getPostAttachments(item.data.attachments)"
+              :key="`${attachment.media_url}-${attachmentIndex}`"
+              class="post-attachment-card"
+            >
+              <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Post attachment" />
+              <img :src="attachment.media_url" alt="Post attachment" />
+            </div>
+          </div>
           <div v-if="hasLinkPreviewContent(item.data.link_preview)" class="link-preview">
             <strong>{{ item.data.link_preview?.title }}</strong>
             <p>{{ item.data.link_preview?.description }}</p>
@@ -1143,7 +1332,21 @@ function onLogout() {
                   Connected
                 </span>
               </h3>
-              <p class="post-content-link">{{ post.content }}</p>
+              <MentionTextContent
+                :content="post.content"
+                :tagged-user-ids="post.tagged_user_ids || []"
+                @mention-click="openAuthorProfile"
+              />
+              <div v-if="getPostAttachments(post.attachments).length" class="post-attachment-grid">
+                <div
+                  v-for="(attachment, attachmentIndex) in getPostAttachments(post.attachments)"
+                  :key="`${attachment.media_url}-${attachmentIndex}`"
+                  class="post-attachment-card"
+                >
+                  <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Post attachment" />
+                  <img :src="attachment.media_url" alt="Post attachment" />
+                </div>
+              </div>
               <div v-if="hasLinkPreviewContent(post.link_preview)" class="link-preview">
                 <strong>{{ post.link_preview?.title }}</strong>
                 <p>{{ post.link_preview?.description }}</p>
@@ -1243,17 +1446,108 @@ function onLogout() {
     <ComposeView v-if="activeModal === 'compose'" embedded @close="closeModal" />
     <ProfileView v-if="activeModal === 'profile'" embedded @close="closeModal" />
     <ThemeStudioView v-if="activeModal === 'theme-studio'" embedded @close="closeModal" />
-    <div v-if="showReplyModal" class="modal-overlay">
-      <section class="auth-card modal-card">
+    <div v-if="showReplyModal" class="modal-overlay" @click.self="closeReplyModal">
+      <section class="auth-card modal-card mention-host-card">
         <h2>Reply</h2>
-        <textarea v-model="replyDraft" rows="4" placeholder="Write your reply" />
+        <MentionComposerInput
+          v-model="replyDraft"
+          :tagged-user-ids="replyTaggedUserIds"
+          :required="true"
+          placeholder="Write your reply"
+          @update:tagged-user-ids="replyTaggedUserIds = $event"
+        />
+        <div class="composer-attachment-tools">
+          <button
+            type="button"
+            class="icon-action-button"
+            title="Add image"
+            aria-label="Add image"
+            @click="openReplyImagePicker"
+          >
+            <svg viewBox="0 0 24 24" class="icon">
+              <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <circle cx="9" cy="10" r="1.8" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <path d="m5 17 4.5-4.5L13 16l2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <input
+            ref="replyAttachmentInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden-file-input"
+            @change="onReplyImageSelected"
+          />
+        </div>
+        <div v-if="replyAttachments.length" class="post-attachment-grid">
+          <div
+            v-for="(attachment, attachmentIndex) in replyAttachments"
+            :key="`reply-attachment-${attachment.media_url}-${attachmentIndex}`"
+            class="post-attachment-card"
+          >
+            <button type="button" class="post-attachment-remove" @click="removeReplyAttachment(attachmentIndex)">x</button>
+            <img :src="attachment.media_url" alt="Reply attachment" />
+          </div>
+        </div>
+        <p v-if="isReplyUploadingImage">Uploading image...</p>
+        <input v-model="replyLinkDraft" placeholder="Optional link URL" />
         <div class="modal-actions">
           <button type="button" @click="closeReplyModal">Cancel</button>
-          <button type="button" :disabled="!replyDraft.trim()" @click="submitReplyModal">Post reply</button>
+          <button type="button" :disabled="!replyDraft.trim() || isReplyUploadingImage" @click="submitReplyModal">
+            Post reply
+          </button>
         </div>
       </section>
     </div>
-    <div v-if="showCopyLinkModal" class="modal-overlay">
+    <div v-if="showShareModal" class="modal-overlay" @click.self="closeShareModal">
+      <section class="auth-card modal-card mention-host-card">
+        <h2>Share</h2>
+        <MentionComposerInput
+          v-model="shareDraft"
+          :tagged-user-ids="shareTaggedUserIds"
+          placeholder="Add your share text (optional)"
+          @update:tagged-user-ids="shareTaggedUserIds = $event"
+        />
+        <div class="composer-attachment-tools">
+          <button
+            type="button"
+            class="icon-action-button"
+            title="Add image"
+            aria-label="Add image"
+            @click="openShareImagePicker"
+          >
+            <svg viewBox="0 0 24 24" class="icon">
+              <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <circle cx="9" cy="10" r="1.8" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <path d="m5 17 4.5-4.5L13 16l2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <input
+            ref="shareAttachmentInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden-file-input"
+            @change="onShareImageSelected"
+          />
+        </div>
+        <div v-if="shareAttachments.length" class="post-attachment-grid">
+          <div
+            v-for="(attachment, attachmentIndex) in shareAttachments"
+            :key="`share-attachment-${attachment.media_url}-${attachmentIndex}`"
+            class="post-attachment-card"
+          >
+            <button type="button" class="post-attachment-remove" @click="removeShareAttachment(attachmentIndex)">x</button>
+            <img :src="attachment.media_url" alt="Share attachment" />
+          </div>
+        </div>
+        <p v-if="isShareUploadingImage">Uploading image...</p>
+        <input v-model="shareLinkDraft" placeholder="Optional link URL" />
+        <div class="modal-actions">
+          <button type="button" @click="closeShareModal">Cancel</button>
+          <button type="button" :disabled="isShareUploadingImage" @click="submitShareModal">Share</button>
+        </div>
+      </section>
+    </div>
+    <div v-if="showCopyLinkModal" class="modal-overlay" @click.self="closeCopyLinkModal">
       <section class="auth-card modal-card">
         <h2>Copy post link</h2>
         <input :value="copyLinkFallbackValue" readonly />

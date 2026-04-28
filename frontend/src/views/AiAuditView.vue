@@ -3,8 +3,10 @@ import { onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import { fetchAiAuditRecords, type AiAuditRecord } from "../api/ai-audit";
+import { useErrorModalStore } from "../stores/error-modal";
 
 const router = useRouter();
+const errorModalStore = useErrorModalStore();
 const filters = reactive({
   user_id: "",
   action_name: "",
@@ -17,10 +19,6 @@ const statusText = ref("");
 const errorText = ref("");
 
 function goBack() {
-  if (window.history.length > 1) {
-    router.back();
-    return;
-  }
   void router.push({ name: "feed" });
 }
 
@@ -41,8 +39,10 @@ async function loadAudits() {
     statusText.value = "";
     if (status === 429) {
       errorText.value = "Rate limited while loading audit records. Please wait and retry.";
+      errorModalStore.showError("Rate limited while loading audit records. Please wait and retry.");
     } else {
       errorText.value = "Unable to load audit records. Confirm account permissions.";
+      errorModalStore.showError("Unable to load audit records. Confirm account permissions.");
     }
   }
 }
@@ -66,7 +66,6 @@ onMounted(async () => {
       <input v-model.number="filters.limit" type="number" min="1" max="500" />
       <button type="submit">Apply filters</button>
       <p v-if="statusText">{{ statusText }}</p>
-      <p v-if="errorText">{{ errorText }}</p>
     </form>
 
     <h2>Records</h2>

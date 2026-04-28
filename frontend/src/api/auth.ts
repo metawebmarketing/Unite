@@ -7,6 +7,10 @@ export interface AuthPayload {
   email: string;
 }
 
+export interface RefreshAccessResponse {
+  access: string;
+}
+
 export interface SignupInput {
   username: string;
   email: string;
@@ -35,6 +39,11 @@ export async function signup(payload: SignupInput): Promise<AuthPayload> {
 
 export async function login(payload: LoginInput): Promise<AuthPayload> {
   const response = await apiClient.post<AuthPayload>("/auth/login", payload);
+  return response.data;
+}
+
+export async function refreshAccessToken(refreshToken: string): Promise<RefreshAccessResponse> {
+  const response = await apiClient.post<RefreshAccessResponse>("/auth/token/refresh", { refresh: refreshToken });
   return response.data;
 }
 

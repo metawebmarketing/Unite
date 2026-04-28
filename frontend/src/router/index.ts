@@ -3,6 +3,9 @@ import AdsLabView from "../views/AdsLabView.vue";
 import AiAuditView from "../views/AiAuditView.vue";
 import BookmarkedPostsView from "../views/BookmarkedPostsView.vue";
 import ConnectionsListView from "../views/ConnectionsListView.vue";
+import MessagesView from "../views/MessagesView.vue";
+import MessageThreadView from "../views/MessageThreadView.vue";
+import NotificationsView from "../views/NotificationsView.vue";
 import PinnedPostsView from "../views/PinnedPostsView.vue";
 import PolicyLabView from "../views/PolicyLabView.vue";
 import PostDetailView from "../views/PostDetailView.vue";
@@ -110,6 +113,24 @@ const router = createRouter({
       path: "/search",
       name: "search",
       component: SearchView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/messages",
+      name: "messages",
+      component: MessagesView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/messages/:threadId",
+      name: "message-thread",
+      component: MessageThreadView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/notifications",
+      name: "notifications",
+      component: NotificationsView,
       meta: { requiresAuth: true },
     },
   ],

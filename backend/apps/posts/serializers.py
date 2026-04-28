@@ -27,6 +27,7 @@ class PostSerializer(serializers.ModelSerializer):
             "link_preview",
             "visibility",
             "interest_tags",
+            "tagged_user_ids",
             "attachments",
             "interaction_counts",
             "has_liked",
@@ -56,11 +57,15 @@ class PostSerializer(serializers.ModelSerializer):
         return value
 
     def validate_attachments(self, value):
+        if len(value) > 1:
+            raise serializers.ValidationError("Only one image attachment is allowed.")
         for attachment in value:
-            if not validate_media_url(attachment["media_url"], attachment["media_type"]):
-                raise serializers.ValidationError(
-                    f"Invalid media URL/extension for type '{attachment['media_type']}'."
-                )
+            media_type = str(attachment.get("media_type", "")).strip().lower()
+            media_url = str(attachment.get("media_url", "")).strip()
+            if media_type != "image":
+                raise serializers.ValidationError("Only image attachments are supported for posts.")
+            if not validate_media_url(media_url, "image"):
+                raise serializers.ValidationError("Invalid image attachment URL.")
         return value
 
     def create(self, validated_data):
@@ -78,3 +83,32 @@ class ReactSerializer(serializers.Serializer):
         choices=["like", "reply", "repost", "quote", "bookmark", "report"],
     )
     content = serializers.CharField(required=False, allow_blank=True, max_length=500)
+    link_url = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+    attachments = serializers.ListField(child=serializers.DictField(), required=False, default=list)
+    tagged_user_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        default=list,
+    )
+
+    def validate_link_url(self, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise serializers.ValidationError("Link URL must be a valid http/https URL.")
+        return value
+
+    def validate_attachments(self, value):
+        if len(value) > 1:
+            raise serializers.ValidationError("Only one image attachment is allowed.")
+        for attachment in value:
+            media_type = str(attachment.get("media_type", "")).strip().lower()
+            media_url = str(attachment.get("media_url", "")).strip()
+            if media_type != "image":
+                raise serializers.ValidationError("Only image attachments are supported for replies/shares.")
+            if not media_url:
+                raise serializers.ValidationError("Attachment media_url is required.")
+            if not validate_media_url(media_url, "image"):
+                raise serializers.ValidationError("Invalid image attachment URL.")
+        return value

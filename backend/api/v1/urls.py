@@ -7,6 +7,8 @@ urlpatterns = [
     path("profile/", include("apps.accounts.urls_profile")),
     path("connections/", include("apps.connections.urls")),
     path("posts/", include("apps.posts.urls")),
+    path("messages/", include("apps.messaging.urls")),
+    path("notifications/", include("apps.notifications.urls")),
     path("feed/", include("apps.feed.urls")),
     path("interests/", include("apps.interests.urls")),
     path("moderation/", include("apps.moderation.urls")),

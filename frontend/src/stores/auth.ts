@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 
-import { login, signup, type LoginInput, type SignupInput } from "../api/auth";
+import { login, refreshAccessToken as requestAccessRefresh, signup, type LoginInput, type SignupInput } from "../api/auth";
 import { setAuthToken } from "../api/client";
 import { fetchProfile } from "../api/profile";
 
@@ -75,6 +75,20 @@ export const useAuthStore = defineStore("auth", {
         this.isStaff = false;
         return false;
       }
+    },
+    async refreshAccessToken() {
+      if (!this.refreshToken) {
+        return null;
+      }
+      const response = await requestAccessRefresh(this.refreshToken);
+      const nextAccessToken = String(response.access || "").trim();
+      if (!nextAccessToken) {
+        return null;
+      }
+      this.accessToken = nextAccessToken;
+      setAuthToken(nextAccessToken);
+      this.persist();
+      return nextAccessToken;
     },
     async validateSession() {
       if (!this.accessToken) {

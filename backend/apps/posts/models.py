@@ -21,10 +21,12 @@ class Post(models.Model):
         default=Visibility.PUBLIC,
     )
     interest_tags = models.JSONField(default=list, blank=True)
+    tagged_user_ids = models.JSONField(default=list, blank=True)
     sentiment_label = models.CharField(max_length=16, default="neutral")
     sentiment_score = models.FloatField(default=0.0)
     sentiment_needs_rescore = models.BooleanField(default=False)
     is_pinned = models.BooleanField(default=False)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -66,6 +68,10 @@ class PostInteraction(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="post_interactions")
     action_type = models.CharField(max_length=24, choices=ActionType.choices)
     content = models.CharField(max_length=500, blank=True)
+    link_url = models.URLField(blank=True)
+    attachments = models.JSONField(default=list, blank=True)
+    tagged_user_ids = models.JSONField(default=list, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

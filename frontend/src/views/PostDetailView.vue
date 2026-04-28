@@ -1,24 +1,50 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { connectToUser, disconnectFromUser } from "../api/connections";
-import { fetchPostDetail, reactToPost, togglePostPin, type PostDetailResponse } from "../api/posts";
+import { fetchPostDetail, reactToPost, togglePostPin, uploadPostImage, type PostDetailResponse } from "../api/posts";
 import { useAuthStore } from "../stores/auth";
+import { useErrorModalStore } from "../stores/error-modal";
 import { useFeedStore } from "../stores/feed";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
+
+const MentionComposerInput = defineAsyncComponent(async () => {
+  const componentModule = await import("../components/MentionComposerInput.vue");
+  return (componentModule as { default?: unknown }).default || componentModule;
+});
+
+const MentionTextContent = defineAsyncComponent(async () => {
+  const componentModule = await import("../components/MentionTextContent.vue");
+  return (componentModule as { default?: unknown }).default || componentModule;
+});
 
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
+const errorModalStore = useErrorModalStore();
 const feedStore = useFeedStore();
 const detail = ref<PostDetailResponse | null>(null);
 const isLoading = ref(false);
 const errorText = ref("");
 const activeMenuPostId = ref<number | null>(null);
 const showReplyModal = ref(false);
+const showShareModal = ref(false);
 const replyDraft = ref("");
+const replyLinkDraft = ref("");
 const replyTargetPostId = ref<number | null>(null);
+const replyAttachmentInputRef = ref<HTMLInputElement | null>(null);
+const replyAttachments = ref<Array<{ media_type: "image"; media_url: string }>>([]);
+const isReplyUploadingImage = ref(false);
+const replyTaggedUserIds = ref<number[]>([]);
+const shareDraft = ref("");
+const shareLinkDraft = ref("");
+const shareTargetPostId = ref<number | null>(null);
+const shareAttachmentInputRef = ref<HTMLInputElement | null>(null);
+const shareAttachments = ref<Array<{ media_type: "image"; media_url: string }>>([]);
+const isShareUploadingImage = ref(false);
+const shareTaggedUserIds = ref<number[]>([]);
+const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
 const connectionStatusByAuthorId = ref<Record<number, boolean>>({});
@@ -47,10 +73,126 @@ function hasLinkPreviewContent(linkPreview: unknown): boolean {
   return Boolean(preview.title || preview.description || preview.host || preview.url);
 }
 
+function getPostAttachments(value: unknown): Array<{ media_type: "image"; media_url: string }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => ({
+      media_type: String((item as { media_type?: string }).media_type || "").trim().toLowerCase(),
+      media_url: String((item as { media_url?: string }).media_url || "").trim(),
+    }))
+    .filter(
+      (item): item is { media_type: "image"; media_url: string } =>
+        Boolean(item.media_url) && item.media_type === "image",
+    );
+}
+
+function resetReplyComposerState() {
+  replyDraft.value = "";
+  replyLinkDraft.value = "";
+  replyAttachments.value = [];
+  isReplyUploadingImage.value = false;
+  replyTaggedUserIds.value = [];
+}
+
+function resetShareComposerState() {
+  shareDraft.value = "";
+  shareLinkDraft.value = "";
+  shareAttachments.value = [];
+  isShareUploadingImage.value = false;
+  shareTaggedUserIds.value = [];
+}
+
+function openReplyImagePicker() {
+  replyAttachmentInputRef.value?.click();
+}
+
+function openShareImagePicker() {
+  shareAttachmentInputRef.value?.click();
+}
+
+async function onReplyImageSelected(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const files = input?.files ? Array.from(input.files) : [];
+  if (!files.length) {
+    return;
+  }
+  if (!navigator.onLine) {
+    errorModalStore.showError("Image upload requires an online connection.");
+    if (input) {
+      input.value = "";
+    }
+    return;
+  }
+  isReplyUploadingImage.value = true;
+  try {
+    const file = files[0];
+    if (file && String(file.type || "").toLowerCase().startsWith("image/")) {
+      if (Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES) {
+        errorModalStore.showError("Image is too large. Maximum size is 5 MB.");
+        return;
+      }
+      const uploaded = await uploadPostImage(file);
+      replyAttachments.value = [uploaded];
+    }
+  } catch {
+    errorModalStore.showError("Unable to upload image. Please retry.");
+  } finally {
+    isReplyUploadingImage.value = false;
+    if (input) {
+      input.value = "";
+    }
+  }
+}
+
+async function onShareImageSelected(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const files = input?.files ? Array.from(input.files) : [];
+  if (!files.length) {
+    return;
+  }
+  if (!navigator.onLine) {
+    errorModalStore.showError("Image upload requires an online connection.");
+    if (input) {
+      input.value = "";
+    }
+    return;
+  }
+  isShareUploadingImage.value = true;
+  try {
+    const file = files[0];
+    if (file && String(file.type || "").toLowerCase().startsWith("image/")) {
+      if (Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES) {
+        errorModalStore.showError("Image is too large. Maximum size is 5 MB.");
+        return;
+      }
+      const uploaded = await uploadPostImage(file);
+      shareAttachments.value = [uploaded];
+    }
+  } catch {
+    errorModalStore.showError("Unable to upload image. Please retry.");
+  } finally {
+    isShareUploadingImage.value = false;
+    if (input) {
+      input.value = "";
+    }
+  }
+}
+
+function removeReplyAttachment(index: number) {
+  replyAttachments.value = replyAttachments.value.filter((_, currentIndex) => currentIndex !== index);
+}
+
+function removeShareAttachment(index: number) {
+  shareAttachments.value = shareAttachments.value.filter((_, currentIndex) => currentIndex !== index);
+}
+
 async function loadPost() {
   const postId = Number(route.params.postId);
   if (!Number.isInteger(postId) || postId <= 0) {
     errorText.value = "Invalid post.";
+    errorModalStore.showError("Invalid post.");
     detail.value = null;
     return;
   }
@@ -71,8 +213,10 @@ async function loadPost() {
     const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
     if (status === 429) {
       errorText.value = "Rate limited while loading this post. Please wait a few seconds and retry.";
+      errorModalStore.showError("Rate limited while loading this post. Please wait a few seconds and retry.");
     } else {
       errorText.value = "Unable to load this post. If this keeps happening, refresh and retry.";
+      errorModalStore.showError("Unable to load this post. If this keeps happening, refresh and retry.");
     }
     detail.value = null;
   } finally {
@@ -81,10 +225,6 @@ async function loadPost() {
 }
 
 function goBack() {
-  if (window.history.length > 1) {
-    router.back();
-    return;
-  }
   void router.push({ name: "feed" });
 }
 
@@ -194,13 +334,9 @@ async function onLike(target: PostDetailResponse["post"] | PostDetailResponse["r
 }
 
 async function onRepost(target: PostDetailResponse["post"] | PostDetailResponse["replies"][number]) {
-  const previousCount = target.interaction_counts.repost;
-  target.interaction_counts.repost = previousCount > 0 ? Math.max(0, previousCount - 1) : previousCount + 1;
-  try {
-    await reactToPost(target.id, { action: "repost" });
-  } catch {
-    target.interaction_counts.repost = previousCount;
-  }
+  shareTargetPostId.value = target.id;
+  resetShareComposerState();
+  showShareModal.value = true;
 }
 
 async function onBookmark(target: PostDetailResponse["post"] | PostDetailResponse["replies"][number]) {
@@ -227,20 +363,28 @@ async function onTogglePin(target: PostDetailResponse["post"] | PostDetailRespon
 
 async function onReply(target: PostDetailResponse["post"] | PostDetailResponse["replies"][number]) {
   replyTargetPostId.value = target.id;
-  replyDraft.value = "";
+  resetReplyComposerState();
   showReplyModal.value = true;
 }
 
 async function submitReplyModal() {
   const postId = replyTargetPostId.value;
-  if (!postId || !replyDraft.value.trim()) {
+  if (!postId || !replyDraft.value.trim() || isReplyUploadingImage.value) {
+    return;
+  }
+  if (replyAttachments.value.length && !navigator.onLine) {
+    errorModalStore.showError("Image attachments require an online connection.");
     return;
   }
   try {
-    await reactToPost(postId, { action: "reply", content: replyDraft.value.trim() });
-    showReplyModal.value = false;
-    replyTargetPostId.value = null;
-    replyDraft.value = "";
+    await reactToPost(postId, {
+      action: "reply",
+      content: replyDraft.value.trim(),
+      link_url: replyLinkDraft.value.trim() || undefined,
+      attachments: replyAttachments.value.length ? replyAttachments.value : undefined,
+      tagged_user_ids: replyTaggedUserIds.value,
+    });
+    closeReplyModal();
     await loadPost();
   } catch {
     // Keep current state untouched when reply fails.
@@ -250,7 +394,38 @@ async function submitReplyModal() {
 function closeReplyModal() {
   showReplyModal.value = false;
   replyTargetPostId.value = null;
-  replyDraft.value = "";
+  resetReplyComposerState();
+}
+
+async function submitShareModal() {
+  const postId = shareTargetPostId.value;
+  if (!postId || isShareUploadingImage.value) {
+    return;
+  }
+  if (shareAttachments.value.length && !navigator.onLine) {
+    errorModalStore.showError("Image attachments require an online connection.");
+    return;
+  }
+  const payload = {
+    content: shareDraft.value.trim(),
+    link_url: shareLinkDraft.value.trim() || undefined,
+    attachments: shareAttachments.value.length ? shareAttachments.value : undefined,
+    tagged_user_ids: shareTaggedUserIds.value,
+  };
+  const hasQuotePayload =
+    Boolean(payload.content) ||
+    Boolean(payload.link_url) ||
+    Boolean((payload.attachments || []).length) ||
+    Boolean(payload.tagged_user_ids.length);
+  await reactToPost(postId, hasQuotePayload ? { action: "quote", ...payload } : { action: "repost" });
+  closeShareModal();
+  await loadPost();
+}
+
+function closeShareModal() {
+  showShareModal.value = false;
+  shareTargetPostId.value = null;
+  resetShareComposerState();
 }
 
 function closeCopyLinkModal() {
@@ -263,11 +438,23 @@ onMounted(() => {
   void loadPost();
 });
 
+onUnmounted(() => {
+  document.body.style.overflow = "";
+});
+
 watch(
   () => route.params.postId,
   () => {
     void loadPost();
   },
+);
+
+watch(
+  [showReplyModal, showShareModal, showCopyLinkModal],
+  ([replyModalValue, shareModalValue, copyModalValue]) => {
+    document.body.style.overflow = replyModalValue || shareModalValue || copyModalValue ? "hidden" : "";
+  },
+  { immediate: true },
 );
 </script>
 
@@ -277,7 +464,6 @@ watch(
       <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <p v-if="isLoading">Loading post...</p>
-    <p v-else-if="errorText">{{ errorText }}</p>
     <article v-else-if="detail" class="feed-item">
       <header class="post-header">
         <button type="button" class="author-link feed-avatar-button" @click="openAuthorProfile(detail.post.author_id)">
@@ -341,7 +527,20 @@ watch(
           </div>
         </div>
       </header>
-      <p>{{ detail.post.content }}</p>
+      <MentionTextContent
+        :content="detail.post.content"
+        :tagged-user-ids="detail.post.tagged_user_ids || []"
+        @mention-click="openAuthorProfile"
+      />
+      <div v-if="getPostAttachments(detail.post.attachments).length" class="post-attachment-grid">
+        <div
+          v-for="(attachment, attachmentIndex) in getPostAttachments(detail.post.attachments)"
+          :key="`${attachment.media_url}-${attachmentIndex}`"
+          class="post-attachment-card"
+        >
+          <img :src="attachment.media_url" alt="Post attachment" />
+        </div>
+      </div>
       <div v-if="hasLinkPreviewContent(detail.post.link_preview)" class="link-preview">
         <strong>{{ detail.post.link_preview?.title }}</strong>
         <p>{{ detail.post.link_preview?.description }}</p>
@@ -439,7 +638,20 @@ watch(
             </div>
           </div>
         </header>
-        <p>{{ reply.content }}</p>
+        <MentionTextContent
+          :content="reply.content"
+          :tagged-user-ids="reply.tagged_user_ids || []"
+          @mention-click="openAuthorProfile"
+        />
+        <div v-if="getPostAttachments(reply.attachments).length" class="post-attachment-grid">
+          <div
+            v-for="(attachment, attachmentIndex) in getPostAttachments(reply.attachments)"
+            :key="`${attachment.media_url}-${attachmentIndex}`"
+            class="post-attachment-card"
+          >
+            <img :src="attachment.media_url" alt="Reply attachment" />
+          </div>
+        </div>
         <div v-if="hasLinkPreviewContent(reply.link_preview)" class="link-preview">
           <strong>{{ reply.link_preview?.title }}</strong>
           <p>{{ reply.link_preview?.description }}</p>
@@ -466,17 +678,108 @@ watch(
       </article>
       <p v-if="detail.replies.length === 0">No replies yet.</p>
     </section>
-    <div v-if="showReplyModal" class="modal-overlay">
-      <section class="auth-card modal-card">
+    <div v-if="showReplyModal" class="modal-overlay" @click.self="closeReplyModal">
+      <section class="auth-card modal-card mention-host-card">
         <h2>Reply</h2>
-        <textarea v-model="replyDraft" rows="4" placeholder="Write your reply" />
+        <MentionComposerInput
+          v-model="replyDraft"
+          :tagged-user-ids="replyTaggedUserIds"
+          :required="true"
+          placeholder="Write your reply"
+          @update:tagged-user-ids="replyTaggedUserIds = $event"
+        />
+        <div class="composer-attachment-tools">
+          <button
+            type="button"
+            class="icon-action-button"
+            title="Add image"
+            aria-label="Add image"
+            @click="openReplyImagePicker"
+          >
+            <svg viewBox="0 0 24 24" class="icon">
+              <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <circle cx="9" cy="10" r="1.8" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <path d="m5 17 4.5-4.5L13 16l2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <input
+            ref="replyAttachmentInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden-file-input"
+            @change="onReplyImageSelected"
+          />
+        </div>
+        <div v-if="replyAttachments.length" class="post-attachment-grid">
+          <div
+            v-for="(attachment, attachmentIndex) in replyAttachments"
+            :key="`detail-reply-attachment-${attachment.media_url}-${attachmentIndex}`"
+            class="post-attachment-card"
+          >
+            <button type="button" class="post-attachment-remove" @click="removeReplyAttachment(attachmentIndex)">x</button>
+            <img :src="attachment.media_url" alt="Reply attachment" />
+          </div>
+        </div>
+        <p v-if="isReplyUploadingImage">Uploading image...</p>
+        <input v-model="replyLinkDraft" placeholder="Optional link URL" />
         <div class="modal-actions">
           <button type="button" @click="closeReplyModal">Cancel</button>
-          <button type="button" :disabled="!replyDraft.trim()" @click="submitReplyModal">Post reply</button>
+          <button type="button" :disabled="!replyDraft.trim() || isReplyUploadingImage" @click="submitReplyModal">
+            Post reply
+          </button>
         </div>
       </section>
     </div>
-    <div v-if="showCopyLinkModal" class="modal-overlay">
+    <div v-if="showShareModal" class="modal-overlay" @click.self="closeShareModal">
+      <section class="auth-card modal-card mention-host-card">
+        <h2>Share</h2>
+        <MentionComposerInput
+          v-model="shareDraft"
+          :tagged-user-ids="shareTaggedUserIds"
+          placeholder="Add your share text (optional)"
+          @update:tagged-user-ids="shareTaggedUserIds = $event"
+        />
+        <div class="composer-attachment-tools">
+          <button
+            type="button"
+            class="icon-action-button"
+            title="Add image"
+            aria-label="Add image"
+            @click="openShareImagePicker"
+          >
+            <svg viewBox="0 0 24 24" class="icon">
+              <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <circle cx="9" cy="10" r="1.8" fill="none" stroke="currentColor" stroke-width="1.8" />
+              <path d="m5 17 4.5-4.5L13 16l2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <input
+            ref="shareAttachmentInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden-file-input"
+            @change="onShareImageSelected"
+          />
+        </div>
+        <div v-if="shareAttachments.length" class="post-attachment-grid">
+          <div
+            v-for="(attachment, attachmentIndex) in shareAttachments"
+            :key="`detail-share-attachment-${attachment.media_url}-${attachmentIndex}`"
+            class="post-attachment-card"
+          >
+            <button type="button" class="post-attachment-remove" @click="removeShareAttachment(attachmentIndex)">x</button>
+            <img :src="attachment.media_url" alt="Share attachment" />
+          </div>
+        </div>
+        <p v-if="isShareUploadingImage">Uploading image...</p>
+        <input v-model="shareLinkDraft" placeholder="Optional link URL" />
+        <div class="modal-actions">
+          <button type="button" @click="closeShareModal">Cancel</button>
+          <button type="button" :disabled="isShareUploadingImage" @click="submitShareModal">Share</button>
+        </div>
+      </section>
+    </div>
+    <div v-if="showCopyLinkModal" class="modal-overlay" @click.self="closeCopyLinkModal">
       <section class="auth-card modal-card">
         <h2>Copy post link</h2>
         <input :value="copyLinkFallbackValue" readonly />

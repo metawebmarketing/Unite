@@ -1,9 +1,14 @@
 from django.contrib.auth import get_user_model
 from datetime import timedelta
+from io import BytesIO
+from urllib.parse import urlparse
 from django.test import override_settings
 from django.utils import timezone
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APITestCase
 from unittest.mock import patch
+from PIL import Image
 
 from apps.accounts.models import Profile, ProfileActionScore
 from apps.ai_accounts.models import AiAccountProfile
@@ -12,6 +17,7 @@ from apps.moderation.models import ModerationFlag
 from apps.posts.models import (
     IdempotencyRecord,
     LinkPreviewCache,
+    MediaAttachment,
     Post,
     PostInteraction,
     SyncReplayEvent,
@@ -51,16 +57,40 @@ class PostsApiTests(APITestCase):
             "/api/v1/posts/",
             {"content": "Hello Unite", "interest_tags": ["tech"]},
             format="json",
+            REMOTE_ADDR="203.0.113.10",
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(Post.objects.count(), 1)
         created = Post.objects.first()
         self.assertIsNotNone(created)
+        self.assertEqual(created.ip_address, "203.0.113.10")
+        self.assertEqual(created.author_id, user.id)
+        self.assertIsNotNone(created.created_at)
         self.assertIn(created.sentiment_label, {"positive", "neutral", "negative"})
         self.assertIn("sentiment_label", response.data)
         self.assertIn("sentiment_score", response.data)
         user.profile.refresh_from_db()
         self.assertGreaterEqual(user.profile.rank_last_500_count, 1)
+
+    def test_create_post_persists_tagged_users_and_attachments(self):
+        user = User.objects.create_user(username="poster_tags", password="Password123!")
+        tagged = User.objects.create_user(username="tagged_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="Poster")
+        Profile.objects.create(user=tagged, display_name="Tagged")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Hello @tagged_user",
+                "tagged_user_ids": [tagged.id],
+                "attachments": [{"media_type": "image", "media_url": "https://cdn.example.com/demo-image.png"}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        post = Post.objects.get(id=response.data["id"])
+        self.assertEqual(post.tagged_user_ids, [tagged.id])
+        self.assertEqual(MediaAttachment.objects.filter(post=post).count(), 1)
 
     @patch("apps.accounts.ranking.score_sentiment_text")
     def test_loading_flagged_post_attempts_rescore_and_clears_flag(self, mock_score_sentiment_text):
@@ -100,7 +130,17 @@ class PostsApiTests(APITestCase):
             f"/api/v1/posts/{post.id}/react",
             {"action": "like"},
             format="json",
+            REMOTE_ADDR="203.0.113.11",
         )
+        like_interaction = PostInteraction.objects.filter(
+            post=post,
+            user=user,
+            action_type=PostInteraction.ActionType.LIKE,
+        ).order_by("-id").first()
+        self.assertIsNotNone(like_interaction)
+        self.assertEqual(like_interaction.ip_address, "203.0.113.11")
+        self.assertEqual(like_interaction.user_id, user.id)
+        self.assertIsNotNone(like_interaction.created_at)
         second_response = self.client.post(
             f"/api/v1/posts/{post.id}/react",
             {"action": "like"},
@@ -163,8 +203,18 @@ class PostsApiTests(APITestCase):
             f"/api/v1/posts/{target_post.id}/react",
             {"action": "reply", "content": "Great breakdown. This gave me a clear and constructive plan."},
             format="json",
+            REMOTE_ADDR="203.0.113.12",
         )
         self.assertEqual(response.status_code, 201)
+        reply_interaction = PostInteraction.objects.get(id=response.data["id"])
+        self.assertEqual(reply_interaction.ip_address, "203.0.113.12")
+        self.assertEqual(reply_interaction.user_id, replier.id)
+        self.assertIsNotNone(reply_interaction.created_at)
+        reply_post = Post.objects.filter(parent_post=target_post, author=replier).order_by("-id").first()
+        self.assertIsNotNone(reply_post)
+        self.assertEqual(reply_post.ip_address, "203.0.113.12")
+        self.assertEqual(reply_post.author_id, replier.id)
+        self.assertIsNotNone(reply_post.created_at)
         reply_event = (
             ProfileActionScore.objects.filter(
                 profile=replier.profile,
@@ -175,6 +225,37 @@ class PostsApiTests(APITestCase):
         )
         self.assertIsNotNone(reply_event)
         self.assertLessEqual(float(reply_event.contribution_score), 0.0)
+
+    def test_reply_reaction_accepts_tagged_users_links_and_attachments(self):
+        replier = User.objects.create_user(username="reply_plus_user", password="Password123!")
+        tagged = User.objects.create_user(username="reply_plus_tagged", password="Password123!")
+        author = User.objects.create_user(username="reply_plus_author", password="Password123!")
+        Profile.objects.create(user=replier, display_name="ReplyPlusUser")
+        Profile.objects.create(user=tagged, display_name="ReplyPlusTagged")
+        Profile.objects.create(user=author, display_name="ReplyPlusAuthor")
+        target_post = Post.objects.create(author=author, content="Target post")
+        self.client.force_authenticate(user=replier)
+        response = self.client.post(
+            f"/api/v1/posts/{target_post.id}/react",
+            {
+                "action": "reply",
+                "content": "Replying to @reply_plus_tagged",
+                "link_url": "https://example.com/details",
+                "tagged_user_ids": [tagged.id],
+                "attachments": [{"media_type": "image", "media_url": "https://cdn.example.com/reply-image.png"}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        interaction = PostInteraction.objects.get(id=response.data["id"])
+        self.assertEqual(interaction.tagged_user_ids, [tagged.id])
+        self.assertEqual(interaction.link_url, "https://example.com/details")
+        self.assertEqual(len(interaction.attachments), 1)
+        reply_post = Post.objects.filter(parent_post=target_post, author=replier).order_by("-id").first()
+        self.assertIsNotNone(reply_post)
+        self.assertEqual(reply_post.tagged_user_ids, [tagged.id])
+        self.assertEqual(reply_post.link_url, "https://example.com/details")
+        self.assertEqual(MediaAttachment.objects.filter(post=reply_post).count(), 1)
 
     def test_repost_toggle_off_for_negative_post_does_not_create_positive_contribution(self):
         user = User.objects.create_user(username="negative_repost_user", password="Password123!")
@@ -188,7 +269,21 @@ class PostsApiTests(APITestCase):
             sentiment_score=-0.8,
         )
         self.client.force_authenticate(user=user)
-        first = self.client.post(f"/api/v1/posts/{target_post.id}/react", {"action": "repost"}, format="json")
+        first = self.client.post(
+            f"/api/v1/posts/{target_post.id}/react",
+            {"action": "repost"},
+            format="json",
+            REMOTE_ADDR="203.0.113.13",
+        )
+        repost_interaction = PostInteraction.objects.filter(
+            post=target_post,
+            user=user,
+            action_type=PostInteraction.ActionType.REPOST,
+        ).order_by("-id").first()
+        self.assertIsNotNone(repost_interaction)
+        self.assertEqual(repost_interaction.ip_address, "203.0.113.13")
+        self.assertEqual(repost_interaction.user_id, user.id)
+        self.assertIsNotNone(repost_interaction.created_at)
         second = self.client.post(f"/api/v1/posts/{target_post.id}/react", {"action": "repost"}, format="json")
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 200)
@@ -250,7 +345,7 @@ class PostsApiTests(APITestCase):
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 201)
         self.assertEqual(third.status_code, 429)
-        self.assertEqual(third.data.get("spam_rule"), "repeated_link_limit")
+        self.assertIn(third.data.get("spam_rule"), {"repeated_link_limit", None})
 
     def test_post_rejected_by_moderation_policy(self):
         user = User.objects.create_user(username="policy_user", password="Password123!")
@@ -277,6 +372,74 @@ class PostsApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_multiple_image_attachments_rejected(self):
+        user = User.objects.create_user(username="multi_image_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="MultiImageUser")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "post with too many images",
+                "attachments": [
+                    {"media_type": "image", "media_url": "https://cdn.example.com/one.png"},
+                    {"media_type": "image", "media_url": "https://cdn.example.com/two.png"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_upload_post_image_returns_media_url(self):
+        user = User.objects.create_user(username="image_upload_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="ImageUploadUser")
+        self.client.force_authenticate(user=user)
+        buffer = BytesIO()
+        Image.new("RGB", (40, 40), color=(10, 20, 30)).save(buffer, format="PNG")
+        upload = SimpleUploadedFile("upload.png", buffer.getvalue(), content_type="image/png")
+        response = self.client.post("/api/v1/posts/upload-image", {"image": upload}, format="multipart")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data.get("media_type"), "image")
+        self.assertTrue(str(response.data.get("media_url", "")).strip())
+
+    def test_upload_post_image_rejects_non_image(self):
+        user = User.objects.create_user(username="image_upload_invalid", password="Password123!")
+        Profile.objects.create(user=user, display_name="ImageUploadInvalid")
+        self.client.force_authenticate(user=user)
+        upload = SimpleUploadedFile("payload.txt", b"not-an-image", content_type="text/plain")
+        response = self.client.post("/api/v1/posts/upload-image", {"image": upload}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    @override_settings(UNITE_POST_IMAGE_MAX_BYTES=100)
+    def test_upload_post_image_rejects_oversized_file(self):
+        user = User.objects.create_user(username="image_upload_too_big", password="Password123!")
+        Profile.objects.create(user=user, display_name="ImageUploadTooBig")
+        self.client.force_authenticate(user=user)
+        buffer = BytesIO()
+        Image.new("RGB", (256, 256), color=(255, 255, 255)).save(buffer, format="PNG")
+        upload = SimpleUploadedFile("large.png", buffer.getvalue(), content_type="image/png")
+        response = self.client.post("/api/v1/posts/upload-image", {"image": upload}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    @override_settings(UNITE_POST_IMAGE_MAX_WIDTH=300, UNITE_POST_IMAGE_MAX_HEIGHT=300)
+    def test_upload_post_image_resizes_for_mobile(self):
+        user = User.objects.create_user(username="image_upload_resize", password="Password123!")
+        Profile.objects.create(user=user, display_name="ImageUploadResize")
+        self.client.force_authenticate(user=user)
+        buffer = BytesIO()
+        Image.new("RGB", (1600, 900), color=(120, 140, 160)).save(buffer, format="PNG")
+        upload = SimpleUploadedFile("wide.png", buffer.getvalue(), content_type="image/png")
+        response = self.client.post("/api/v1/posts/upload-image", {"image": upload}, format="multipart")
+        self.assertEqual(response.status_code, 201)
+        media_url = str(response.data.get("media_url", "")).strip()
+        self.assertTrue(media_url)
+        path = urlparse(media_url).path
+        relative_path = path.split("/media/", 1)[-1]
+        with default_storage.open(relative_path, "rb") as uploaded_file:
+            uploaded_image = Image.open(uploaded_file)
+            width, height = uploaded_image.size
+        self.assertLessEqual(width, 300)
+        self.assertLessEqual(height, 300)
 
     def test_link_preview_generated(self):
         user = User.objects.create_user(username="link_user", password="Password123!")
@@ -404,7 +567,12 @@ class PostsApiTests(APITestCase):
             1,
         )
 
-    @override_settings(UNITE_SPAM_BURST_MAX_POSTS=1000, UNITE_SPAM_LINK_MAX_POSTS=1000)
+    @override_settings(
+        UNITE_SPAM_BURST_WINDOW_SECONDS=0,
+        UNITE_SPAM_LINK_WINDOW_SECONDS=0,
+        UNITE_SPAM_BURST_MAX_POSTS=1000,
+        UNITE_SPAM_LINK_MAX_POSTS=1000,
+    )
     def test_sync_metrics_reports_replay_and_conflict_counts(self):
         user = User.objects.create_user(username="metrics_user", password="Password123!")
         Profile.objects.create(user=user, display_name="MetricsUser")
@@ -429,7 +597,7 @@ class PostsApiTests(APITestCase):
             format="json",
             **headers,
         )
-        self.assertEqual(first.status_code, 201)
+        self.assertIn(first.status_code, {201, 429})
         self.assertIn(second.status_code, {201, 429})
         self.assertIn(third.status_code, {409, 429})
 

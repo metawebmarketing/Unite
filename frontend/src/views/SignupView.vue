@@ -7,9 +7,11 @@ import { submitOnboardingInterests } from "../api/onboarding";
 import { fetchProfile } from "../api/profile";
 import { DEFAULT_INTEREST_SUGGESTIONS } from "../constants/interests";
 import { useAuthStore } from "../stores/auth";
+import { useErrorModalStore } from "../stores/error-modal";
 
 const router = useRouter();
 const authStore = useAuthStore();
+const errorModalStore = useErrorModalStore();
 const currentStep = ref<1 | 2>(1);
 const errorText = ref("");
 const saving = ref(false);
@@ -85,6 +87,7 @@ async function onContinueToStep2() {
     await refreshSuggestions();
   } catch {
     errorText.value = "Signup failed. Please verify your credentials.";
+    errorModalStore.showError("Signup failed. Please verify your credentials.");
   } finally {
     saving.value = false;
   }
@@ -94,6 +97,7 @@ async function onFinishSignup() {
   errorText.value = "";
   if (interests.value.length < 5) {
     errorText.value = "Add at least 5 interests.";
+    errorModalStore.showError("Add at least 5 interests.");
     return;
   }
   saving.value = true;
@@ -120,7 +124,7 @@ async function onCancel() {
 </script>
 
 <template>
-  <div class="modal-overlay">
+  <div class="modal-overlay" @click.self="onCancel">
     <section class="auth-card modal-card">
       <h1>Sign up</h1>
       <p>Step {{ currentStep }} of 2</p>
@@ -169,7 +173,6 @@ async function onCancel() {
         <div v-if="saving" class="progress-track"><div class="progress-fill progress-indeterminate" /></div>
       </form>
 
-      <p v-if="errorText">{{ errorText }}</p>
       <div v-if="saving" class="loading-overlay">
         <div class="spinner" />
       </div>

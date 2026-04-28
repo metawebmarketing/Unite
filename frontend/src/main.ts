@@ -1,11 +1,14 @@
+import type { AxiosRequestConfig } from "axios";
 import { createPinia } from "pinia";
 import { createApp } from "vue";
 
 import App from "./App.vue";
-import { apiClient, getAuthToken } from "./api/client";
+import GlobalErrorModal from "./components/GlobalErrorModal.vue";
+import { apiClient } from "./api/client";
 import { fetchInstallStatus } from "./api/install";
 import router from "./router";
 import { useAuthStore } from "./stores/auth";
+import { useErrorModalStore } from "./stores/error-modal";
 import { loadThemeOnStartup } from "./theme";
 import "./style.css";
 
@@ -13,8 +16,10 @@ void loadThemeOnStartup();
 
 const pinia = createPinia();
 const app = createApp(App);
+app.component("GlobalErrorModal", GlobalErrorModal);
 app.use(pinia);
 const authStore = useAuthStore(pinia);
+const errorModalStore = useErrorModalStore(pinia);
 authStore.hydrateFromStorage();
 let installKnown: boolean | null = null;
 const cachedInstallState = sessionStorage.getItem("unite_install_known");
@@ -26,57 +31,95 @@ if (cachedInstallState === "false") {
 }
 
 let redirectingUnauthorized = false;
-let sessionValidationPromise: Promise<boolean> | null = null;
+let refreshAccessPromise: Promise<string | null> | null = null;
 
-async function confirmSessionStillValid(): Promise<boolean> {
-  const token = getAuthToken();
-  const baseURL = String(apiClient.defaults.baseURL || "").replace(/\/$/, "");
-  if (!token || !baseURL) {
+async function refreshAccessTokenIfPossible(): Promise<string | null> {
+  if (!authStore.refreshToken) {
+    return null;
+  }
+  if (!refreshAccessPromise) {
+    refreshAccessPromise = authStore
+      .refreshAccessToken()
+      .then((token) => token || null)
+      .catch(() => null)
+      .finally(() => {
+        refreshAccessPromise = null;
+      });
+  }
+  return refreshAccessPromise;
+}
+
+function shouldAttemptRefresh(
+  statusCode: number,
+  hasAuthHeader: boolean,
+  requestUrl: string,
+  requestConfig: Record<string, unknown>,
+) {
+  if (statusCode !== 401 || !hasAuthHeader) {
     return false;
   }
-  try {
-    const response = await fetch(`${baseURL}/profile/`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    if (response.status === 401 || response.status === 403) {
-      return false;
-    }
-    return true;
-  } catch {
-    // Treat transient network failures as non-auth failures.
-    return true;
+  if (requestUrl.includes("/auth/token/refresh")) {
+    return false;
   }
+  return !Boolean(requestConfig._retryAfterRefresh);
+}
+
+function buildRetryConfig(requestConfig: Record<string, unknown>, nextToken: string): AxiosRequestConfig {
+  const retryConfig: AxiosRequestConfig = { ...(requestConfig as AxiosRequestConfig) };
+  const retryHeaders = { ...((retryConfig.headers as Record<string, string>) || {}) };
+  retryHeaders.Authorization = `Bearer ${nextToken}`;
+  retryConfig.headers = retryHeaders;
+  (retryConfig as Record<string, unknown>)._retryAfterRefresh = true;
+  return retryConfig;
 }
 
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
+    const requestConfig = (error?.config || {}) as Record<string, unknown>;
     const statusCode = Number(error?.response?.status || 0);
-    const requestHeaders = (error?.config?.headers || {}) as Record<string, unknown>;
+    const requestHeaders = (requestConfig.headers || {}) as Record<string, unknown>;
+    const requestUrl = String(requestConfig.url || "");
     const hasAuthHeader =
       typeof requestHeaders.Authorization === "string" ||
       typeof requestHeaders.authorization === "string";
-    if (statusCode === 401 && hasAuthHeader) {
-      if (!sessionValidationPromise) {
-        sessionValidationPromise = confirmSessionStillValid().finally(() => {
-          sessionValidationPromise = null;
-        });
+
+    if (shouldAttemptRefresh(statusCode, hasAuthHeader, requestUrl, requestConfig)) {
+      const refreshedToken = await refreshAccessTokenIfPossible();
+      if (refreshedToken) {
+        const retryConfig = buildRetryConfig(requestConfig, refreshedToken);
+        return apiClient.request(retryConfig);
       }
-      const isSessionValid = await sessionValidationPromise;
-      if (!isSessionValid) {
-        authStore.handleUnauthorized();
-        if (!redirectingUnauthorized && router.currentRoute.value.name !== "login") {
-          redirectingUnauthorized = true;
-          try {
-            await router.replace({ name: "login" });
-          } finally {
-            redirectingUnauthorized = false;
-          }
+    }
+
+    if (statusCode === 401 && hasAuthHeader) {
+      authStore.handleUnauthorized();
+      if (!redirectingUnauthorized && router.currentRoute.value.name !== "login") {
+        redirectingUnauthorized = true;
+        try {
+          await router.replace({ name: "login" });
+        } finally {
+          redirectingUnauthorized = false;
         }
       }
+    }
+
+    const responseData = error?.response?.data;
+    const responseDetail =
+      typeof responseData?.detail === "string"
+        ? responseData.detail
+        : Array.isArray(responseData?.non_field_errors)
+          ? String(responseData.non_field_errors[0] || "")
+          : "";
+    const fallbackMessage =
+      statusCode >= 500
+        ? "A server error occurred. Please retry."
+        : statusCode === 429
+          ? "Too many requests. Please wait and retry."
+          : "Request failed. Please retry.";
+    const message = String(responseDetail || fallbackMessage).trim();
+    if (message) {
+      errorModalStore.showError(message);
     }
     return Promise.reject(error);
   },

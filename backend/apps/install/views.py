@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from apps.accounts.models import Profile
 from apps.accounts.serializers import AuthResponseSerializer, build_auth_payload
 from apps.install.models import InstallState
+from apps.install.realtime import broadcast_install_state
 from apps.install.serializers import InstallRunSerializer, InstallStatusSerializer
 from apps.install.tasks import seed_demo_data_task
 from apps.posts.models import Post
@@ -117,6 +118,7 @@ class InstallRunView(APIView):
             state.seed_total_posts = serializer.validated_data.get("seed_total_posts", 0)
             state.seed_created_users = 0
             state.seed_created_posts = 0
+            state.seed_requested_by_user_id = user.id if state.seed_requested else None
             state.seed_last_message = "Seed queued." if state.seed_requested else ""
             state.save(
                 update_fields=[
@@ -130,10 +132,12 @@ class InstallRunView(APIView):
                     "seed_total_posts",
                     "seed_created_users",
                     "seed_created_posts",
+                    "seed_requested_by_user_id",
                     "seed_last_message",
                     "updated_at",
                 ]
             )
+            broadcast_install_state(state.id)
 
         if state.seed_requested:
             task_id = _dispatch_seed_task(
@@ -146,6 +150,7 @@ class InstallRunView(APIView):
                 seed_status="queued",
                 seed_last_message="Seed queued.",
             )
+            broadcast_install_state(state.id)
             state.seed_task_id = task_id
 
         auth_payload = build_auth_payload(user)
@@ -190,6 +195,7 @@ class DemoDataResetView(APIView):
         state.seed_total_posts = seed_total_posts
         state.seed_created_users = 0
         state.seed_created_posts = 0
+        state.seed_requested_by_user_id = request.user.id
         state.seed_last_message = "Seed regeneration queued."
         state.save(
             update_fields=[
@@ -199,6 +205,7 @@ class DemoDataResetView(APIView):
                 "seed_total_posts",
                 "seed_created_users",
                 "seed_created_posts",
+                "seed_requested_by_user_id",
                 "seed_last_message",
                 "updated_at",
             ]
@@ -210,6 +217,7 @@ class DemoDataResetView(APIView):
         )
         state.seed_task_id = task_id
         state.save(update_fields=["seed_task_id", "updated_at"])
+        broadcast_install_state(state.id)
         bump_user_feed_cache_version(request.user.id)
         return Response(
             {

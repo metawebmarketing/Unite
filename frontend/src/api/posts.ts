@@ -4,6 +4,8 @@ export interface CreatePostInput {
   content: string;
   link_url?: string;
   interest_tags?: string[];
+  tagged_user_ids?: number[];
+  attachments?: Array<{ media_type: "image"; media_url: string }>;
 }
 
 export async function createPost(payload: CreatePostInput): Promise<unknown> {
@@ -11,9 +13,19 @@ export async function createPost(payload: CreatePostInput): Promise<unknown> {
   return response.data;
 }
 
+export async function uploadPostImage(file: File): Promise<{ media_type: "image"; media_url: string }> {
+  const payload = new FormData();
+  payload.append("image", file);
+  const response = await apiClient.post<{ media_type: "image"; media_url: string }>("/posts/upload-image", payload);
+  return response.data;
+}
+
 export interface ReactPostInput {
   action: "like" | "reply" | "repost" | "quote" | "bookmark" | "report";
   content?: string;
+  link_url?: string;
+  tagged_user_ids?: number[];
+  attachments?: Array<{ media_type: "image"; media_url: string }>;
 }
 
 export interface PostAuthorSummary {
@@ -40,6 +52,8 @@ export interface PostRecord extends PostAuthorSummary {
     title: string;
     description: string;
   };
+  tagged_user_ids?: number[];
+  attachments?: Array<{ media_type: "image"; media_url: string }>;
   has_liked: boolean;
   has_bookmarked?: boolean;
   interaction_counts: {

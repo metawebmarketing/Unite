@@ -12,6 +12,9 @@ from apps.feed.sentiment_providers import score_sentiment_text
 from apps.feed.cache_utils import bump_user_feed_cache_version
 from apps.install.demo_corpus import load_demo_post_corpus
 from apps.install.models import InstallState
+from apps.install.realtime import broadcast_install_state
+from apps.messaging.models import DMMessage, DMThread, DMThreadParticipant
+from apps.notifications.services import create_notification
 from apps.posts.models import Post, PostInteraction
 
 User = get_user_model()
@@ -31,6 +34,8 @@ def seed_demo_data_task(
     created_connections = 0
     created_interactions = 0
     created_reply_posts = 0
+    created_dm_messages = 0
+    created_mention_notifications = 0
     created_records = 0
     now = timezone.now()
     rng = random.Random()
@@ -63,12 +68,26 @@ def seed_demo_data_task(
     posts_per_user_floor = total_posts // total_users
     extra_posts = total_posts % total_users
     total_records = total_users + total_posts
+    install_state_snapshot = InstallState.objects.filter(id=install_state_id).values(
+        "master_admin_user_id",
+        "seed_requested_by_user_id",
+    ).first()
+    seed_requester_user_id = int((install_state_snapshot or {}).get("seed_requested_by_user_id") or 0)
+    if seed_requester_user_id <= 0:
+        seed_requester_user_id = int((install_state_snapshot or {}).get("master_admin_user_id") or 0)
 
     def random_between(start_at, end_at):
         if start_at >= end_at:
             return start_at
         total_seconds = int((end_at - start_at).total_seconds())
         return start_at + timedelta(seconds=rng.randint(0, max(1, total_seconds)))
+
+    def ensure_dm_thread_for_users(user_one_id: int, user_two_id: int) -> DMThread:
+        left_id, right_id = (user_one_id, user_two_id) if user_one_id < user_two_id else (user_two_id, user_one_id)
+        thread, _ = DMThread.objects.get_or_create(user_a_id=left_id, user_b_id=right_id)
+        DMThreadParticipant.objects.get_or_create(thread=thread, user_id=left_id)
+        DMThreadParticipant.objects.get_or_create(thread=thread, user_id=right_id)
+        return thread
 
     InstallState.objects.filter(id=install_state_id).update(
         seed_status="running",
@@ -78,6 +97,7 @@ def seed_demo_data_task(
         seed_created_posts=0,
         seed_last_message=f"Seeding demo data... (0/{total_records} records)",
     )
+    broadcast_install_state(install_state_id)
     try:
         for index in range(total_users):
             username = f"demo_user_{index + 1:04d}"
@@ -116,6 +136,7 @@ def seed_demo_data_task(
                         f"created account Demo User {index + 1} ({username})."
                     ),
                 )
+                broadcast_install_state(install_state_id)
                 account_created_at = user_joined_at
             else:
                 account_created_at = getattr(user, "date_joined", now - timedelta(days=30))
@@ -157,7 +178,29 @@ def seed_demo_data_task(
                     visibility=Post.Visibility.CONNECTIONS if rng.random() < 0.2 else Post.Visibility.PUBLIC,
                     link_url=link_url,
                     link_preview=link_preview,
+                    tagged_user_ids=(
+                        [seed_requester_user_id]
+                        if seed_requester_user_id > 0
+                        and seed_requester_user_id != user.id
+                        and rng.random() < 0.03
+                        else []
+                    ),
                 )
+                if (
+                    seed_requester_user_id > 0
+                    and isinstance(post.tagged_user_ids, list)
+                    and seed_requester_user_id in post.tagged_user_ids
+                    and created_mention_notifications < 50
+                ):
+                    created_mention_notifications += 1
+                    create_notification(
+                        recipient_user_id=seed_requester_user_id,
+                        actor_user_id=user.id,
+                        event_type="post.mention",
+                        title="You were tagged in demo data",
+                        message=f"@{user.username} mentioned you in seeded content.",
+                        payload={"post_id": int(post.id), "source": "seed_demo"},
+                    )
                 Post.objects.filter(id=post.id).update(created_at=created_at, updated_at=created_at)
                 post.is_pinned = False
                 post_sentiment_label, post_sentiment_score = score_post_sentiment(post)
@@ -193,6 +236,7 @@ def seed_demo_data_task(
                         f"created post for {username} - \"{post_content[:72]}\""
                     ),
                 )
+                broadcast_install_state(install_state_id)
                 created_posts += 1
                 created_records += 1
 
@@ -395,6 +439,76 @@ def seed_demo_data_task(
                                 )
                                 touched_profile_ids.add(actor_profile.id)
 
+        # Seed demo direct messages between the seed initiator and each demo account.
+        install_state = InstallState.objects.filter(id=install_state_id).values(
+            "master_admin_user_id",
+            "seed_requested_by_user_id",
+        ).first()
+        seed_requester_user_id = int((install_state or {}).get("seed_requested_by_user_id") or 0)
+        if seed_requester_user_id <= 0:
+            seed_requester_user_id = int((install_state or {}).get("master_admin_user_id") or 0)
+        seed_requester = User.objects.filter(id=seed_requester_user_id).first() if seed_requester_user_id > 0 else None
+        if seed_requester:
+            for index, demo_user in enumerate(demo_users):
+                if demo_user.id == seed_requester.id:
+                    continue
+                thread = ensure_dm_thread_for_users(seed_requester.id, demo_user.id)
+                corpus_entry = demo_post_corpus[(index * 13 + 5) % len(demo_post_corpus)]
+                inbound_content = (
+                    str(corpus_entry.get("reply_positive", "")).strip()
+                    or str(corpus_entry.get("content", "")).strip()[:280]
+                    or "Hello from your demo network."
+                )
+                outbound_content = (
+                    f"Welcome {demo_user.username}. Thanks for helping seed this demo conversation."
+                )
+                inbound_created_at = random_between(
+                    user_joined_at_by_id.get(demo_user.id, now - timedelta(days=120)),
+                    now,
+                )
+                outbound_created_at = min(
+                    now,
+                    inbound_created_at + timedelta(minutes=rng.randint(3, 240)),
+                )
+                inbound_message = DMMessage.objects.create(
+                    thread=thread,
+                    sender=demo_user,
+                    content=inbound_content,
+                    attachments=[],
+                    link_preview={},
+                    ip_address="127.0.0.1",
+                )
+                outbound_message = DMMessage.objects.create(
+                    thread=thread,
+                    sender=seed_requester,
+                    content=outbound_content,
+                    attachments=[],
+                    link_preview={},
+                    ip_address="127.0.0.1",
+                )
+                DMMessage.objects.filter(id=inbound_message.id).update(created_at=inbound_created_at)
+                DMMessage.objects.filter(id=outbound_message.id).update(created_at=outbound_created_at)
+                latest_message_time = max(inbound_created_at, outbound_created_at)
+                thread.last_message_at = latest_message_time
+                thread.save(update_fields=["last_message_at", "updated_at"])
+                DMThreadParticipant.objects.update_or_create(
+                    thread=thread,
+                    user=seed_requester,
+                    defaults={
+                        "last_read_at": outbound_created_at,
+                        "last_read_message": outbound_message,
+                    },
+                )
+                DMThreadParticipant.objects.update_or_create(
+                    thread=thread,
+                    user=demo_user,
+                    defaults={
+                        "last_read_at": inbound_created_at,
+                        "last_read_message": inbound_message,
+                    },
+                )
+                created_dm_messages += 2
+
         if touched_profile_ids:
             for seeded_profile in Profile.objects.filter(id__in=touched_profile_ids).only("id", "user_id"):
                 recompute_profile_rank_rollups(seeded_profile)
@@ -407,13 +521,39 @@ def seed_demo_data_task(
                 "Demo data creation complete "
                 f"({created_records}/{total_records} base records, "
                 f"{created_connections} connections, {created_interactions} interactions, "
-                f"{created_reply_posts} reply posts)."
+                f"{created_reply_posts} reply posts, {created_dm_messages} dm messages, "
+                f"{created_mention_notifications} mention notifications)."
             ),
         )
-        install_state = InstallState.objects.filter(id=install_state_id).values("master_admin_user_id").first()
+        broadcast_install_state(install_state_id)
+        install_state = InstallState.objects.filter(id=install_state_id).values(
+            "master_admin_user_id",
+            "seed_requested_by_user_id",
+        ).first()
         master_admin_user_id = int((install_state or {}).get("master_admin_user_id") or 0)
+        seed_requested_by_user_id = int((install_state or {}).get("seed_requested_by_user_id") or 0)
         if master_admin_user_id > 0:
             bump_user_feed_cache_version(master_admin_user_id)
+        if seed_requested_by_user_id > 0 and seed_requested_by_user_id != master_admin_user_id:
+            bump_user_feed_cache_version(seed_requested_by_user_id)
+        if seed_requested_by_user_id > 0:
+            create_notification(
+                recipient_user_id=seed_requested_by_user_id,
+                event_type="install.seed_completed",
+                title="Demo data ready",
+                message=(
+                    f"Created {created_users} users, {created_posts} posts, "
+                    f"{created_interactions} interactions, and {created_dm_messages} DM messages."
+                ),
+                payload={
+                    "seed_status": "completed",
+                    "created_users": created_users,
+                    "created_posts": created_posts,
+                    "created_interactions": created_interactions,
+                    "created_dm_messages": created_dm_messages,
+                    "created_mention_notifications": created_mention_notifications,
+                },
+            )
         return {
             "status": "ok",
             "created_users": created_users,
@@ -421,6 +561,8 @@ def seed_demo_data_task(
             "created_connections": created_connections,
             "created_interactions": created_interactions,
             "created_reply_posts": created_reply_posts,
+            "created_dm_messages": created_dm_messages,
+            "created_mention_notifications": created_mention_notifications,
         }
     except Exception as exc:
         InstallState.objects.filter(id=install_state_id).update(
@@ -429,8 +571,15 @@ def seed_demo_data_task(
             seed_created_users=created_users,
             seed_created_posts=created_posts,
         )
-        install_state = InstallState.objects.filter(id=install_state_id).values("master_admin_user_id").first()
+        broadcast_install_state(install_state_id)
+        install_state = InstallState.objects.filter(id=install_state_id).values(
+            "master_admin_user_id",
+            "seed_requested_by_user_id",
+        ).first()
         master_admin_user_id = int((install_state or {}).get("master_admin_user_id") or 0)
+        seed_requested_by_user_id = int((install_state or {}).get("seed_requested_by_user_id") or 0)
         if master_admin_user_id > 0:
             bump_user_feed_cache_version(master_admin_user_id)
+        if seed_requested_by_user_id > 0 and seed_requested_by_user_id != master_admin_user_id:
+            bump_user_feed_cache_version(seed_requested_by_user_id)
         raise

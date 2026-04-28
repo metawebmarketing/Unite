@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { computed, onUnmounted, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import { fetchInstallStatus, runInstall, type InstallStatus } from "../api/install";
 import { useAuthStore } from "../stores/auth";
+import { useErrorModalStore } from "../stores/error-modal";
+import { useNotificationsStore } from "../stores/notifications";
 
 const router = useRouter();
 const authStore = useAuthStore();
+const notificationsStore = useNotificationsStore();
+const errorModalStore = useErrorModalStore();
 const errorText = ref("");
 const statusText = ref("");
 const isBusy = ref(false);
 const installStatus = ref<InstallStatus | null>(null);
 const showSeedProgressModal = ref(false);
-let pollTimer: ReturnType<typeof setInterval> | null = null;
 const form = reactive({
   username: "",
   email: "",
@@ -55,34 +58,6 @@ const totalRecordCount = computed(
   () => (installStatus.value?.seed_total_users || 0) + (installStatus.value?.seed_total_posts || 0),
 );
 
-function startPolling() {
-  if (pollTimer) {
-    return;
-  }
-  pollTimer = setInterval(async () => {
-    try {
-      const status = await fetchInstallStatus();
-      installStatus.value = status;
-      if (!["queued", "running"].includes(status.seed_status)) {
-        stopPolling();
-        setTimeout(() => {
-          showSeedProgressModal.value = false;
-          void router.push("/");
-        }, 500);
-      }
-    } catch {
-      stopPolling();
-    }
-  }, 1200);
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
-
 async function onSubmit() {
   errorText.value = "";
   statusText.value = "Installing...";
@@ -106,7 +81,7 @@ async function onSubmit() {
     statusText.value = result.seed_requested ? "Install complete. Seeding demo data..." : "Install complete.";
     if (result.seed_requested) {
       showSeedProgressModal.value = true;
-      startPolling();
+      notificationsStore.ensureRealtimeConnection();
     } else {
       await router.push("/");
     }
@@ -119,14 +94,38 @@ async function onSubmit() {
         errorText.value = response.data.detail;
       }
     }
+    errorModalStore.showError(errorText.value || "Install failed. Verify values and try again.");
   } finally {
     isBusy.value = false;
   }
 }
 
-onUnmounted(() => {
-  stopPolling();
-});
+watch(
+  () => authStore.isAuthenticated,
+  (isAuthenticated) => {
+    if (isAuthenticated) {
+      notificationsStore.ensureRealtimeConnection();
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => notificationsStore.installStatusRealtime,
+  (status) => {
+    if (!status) {
+      return;
+    }
+    installStatus.value = status;
+    if (showSeedProgressModal.value && !["queued", "running"].includes(status.seed_status)) {
+      setTimeout(() => {
+        showSeedProgressModal.value = false;
+        void router.push("/");
+      }, 500);
+    }
+  },
+  { deep: true },
+);
 </script>
 
 <template>
@@ -181,7 +180,6 @@ onUnmounted(() => {
           </p>
           <p v-if="installStatus.seed_last_message">{{ installStatus.seed_last_message }}</p>
         </div>
-        <p v-if="errorText">{{ errorText }}</p>
       </form>
       <div v-if="isBusy" class="loading-overlay">
         <div class="spinner" />

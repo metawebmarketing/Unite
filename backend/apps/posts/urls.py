@@ -4,6 +4,7 @@ from apps.posts.views import (
     BookmarkedPostListView,
     PinnedPostListView,
     PostDetailView,
+    PostImageUploadView,
     PostListCreateView,
     PostPinView,
     PostReactView,
@@ -14,6 +15,7 @@ from apps.posts.views import (
 
 urlpatterns = [
     path("", PostListCreateView.as_view(), name="post-list-create"),
+    path("upload-image", PostImageUploadView.as_view(), name="post-upload-image"),
     path("bookmarks", BookmarkedPostListView.as_view(), name="bookmarked-post-list"),
     path("pinned", PinnedPostListView.as_view(), name="pinned-post-list"),
     path("user/<int:user_id>", UserPostListView.as_view(), name="user-post-list"),

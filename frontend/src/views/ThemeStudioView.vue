@@ -3,6 +3,7 @@ import { reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import { uploadTheme } from "../api/themes";
+import { useErrorModalStore } from "../stores/error-modal";
 import { applyThemeTokens, cacheThemeTokens } from "../theme";
 
 const form = reactive({
@@ -28,6 +29,7 @@ const statusText = ref("");
 const errorText = ref("");
 const isBusy = ref(false);
 const router = useRouter();
+const errorModalStore = useErrorModalStore();
 const props = defineProps<{ embedded?: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 
@@ -48,6 +50,7 @@ async function onSubmit() {
   } catch {
     statusText.value = "";
     errorText.value = "Failed to upload theme. Validate JSON and required token groups.";
+    errorModalStore.showError("Failed to upload theme. Validate JSON and required token groups.");
   } finally {
     isBusy.value = false;
   }
@@ -69,7 +72,7 @@ export default {
 </script>
 
 <template>
-  <div class="modal-overlay">
+  <div class="modal-overlay" @click.self="onCancel">
     <section class="auth-card modal-card">
       <h1>Theme Studio</h1>
       <form class="stack" @submit.prevent="onSubmit">
@@ -82,7 +85,6 @@ export default {
         </div>
         <div v-if="isBusy" class="progress-track"><div class="progress-fill progress-indeterminate" /></div>
         <p v-if="statusText">{{ statusText }}</p>
-        <p v-if="errorText">{{ errorText }}</p>
       </form>
       <div v-if="isBusy" class="loading-overlay">
         <div class="spinner" />

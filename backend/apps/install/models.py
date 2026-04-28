@@ -12,6 +12,7 @@ class InstallState(models.Model):
     seed_total_posts = models.PositiveIntegerField(default=0)
     seed_created_users = models.PositiveIntegerField(default=0)
     seed_created_posts = models.PositiveIntegerField(default=0)
+    seed_requested_by_user_id = models.PositiveBigIntegerField(null=True, blank=True)
     seed_last_message = models.CharField(max_length=255, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 

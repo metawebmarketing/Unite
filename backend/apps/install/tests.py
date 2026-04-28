@@ -2,6 +2,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
@@ -9,6 +10,7 @@ from apps.accounts.models import Profile
 from apps.install.models import InstallState
 from apps.install.demo_corpus import load_demo_post_corpus
 from apps.install.tasks import seed_demo_data_task
+from apps.messaging.models import DMMessage, DMThread
 from apps.posts.models import Post
 
 User = get_user_model()
@@ -48,6 +50,7 @@ class InstallApiTests(APITestCase):
         self.assertEqual(state.seed_task_id, "task-123")
         self.assertEqual(state.seed_total_users, 24)
         self.assertEqual(state.seed_total_posts, 180)
+        self.assertEqual(state.seed_requested_by_user_id, created_user.id)
         mocked_delay.assert_called_once()
         _, kwargs = mocked_delay.call_args
         self.assertEqual(kwargs["total_users"], 24)
@@ -103,6 +106,7 @@ class InstallApiTests(APITestCase):
         state = InstallState.objects.get(id=1)
         self.assertEqual(state.seed_total_users, 12)
         self.assertEqual(state.seed_total_posts, 77)
+        self.assertEqual(state.seed_requested_by_user_id, admin.id)
         _, kwargs = mocked_delay.call_args
         self.assertEqual(kwargs["total_users"], 12)
         self.assertEqual(kwargs["total_posts"], 77)
@@ -165,3 +169,33 @@ class InstallApiTests(APITestCase):
             if any(marker in content or marker in reply_negative for marker in toxic_markers):
                 toxic_hits += 1
         self.assertGreaterEqual(toxic_hits, 200)
+
+    def test_seed_demo_data_creates_bidirectional_dm_messages_for_seed_requester(self):
+        starter = User.objects.create_user(
+            username="starter_admin",
+            email="starter@example.com",
+            password="Password123!",
+            is_staff=True,
+        )
+        Profile.objects.create(user=starter, display_name="Starter Admin")
+        InstallState.objects.update_or_create(
+            id=1,
+            defaults={
+                "installed": True,
+                "master_admin_user_id": starter.id,
+                "seed_requested_by_user_id": starter.id,
+            },
+        )
+
+        result = seed_demo_data_task(install_state_id=1, total_users=2, total_posts=2)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertGreaterEqual(result.get("created_dm_messages", 0), 4)
+        starter_threads = DMThread.objects.filter(
+            Q(user_a=starter) | Q(user_b=starter)
+        )
+        self.assertGreaterEqual(starter_threads.count(), 2)
+        inbound_from_demo = DMMessage.objects.filter(thread__in=starter_threads).exclude(sender=starter).count()
+        outbound_from_starter = DMMessage.objects.filter(thread__in=starter_threads, sender=starter).count()
+        self.assertGreaterEqual(inbound_from_demo, 2)
+        self.assertGreaterEqual(outbound_from_starter, 2)

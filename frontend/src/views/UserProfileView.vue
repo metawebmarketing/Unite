@@ -6,11 +6,13 @@ import { connectToUser, disconnectFromUser, fetchConnectionStatus } from "../api
 import { fetchPostsByUser, reactToPost, togglePostPin, type PostRecord } from "../api/posts";
 import { fetchPublicProfile, type PublicProfile } from "../api/profile";
 import { useAuthStore } from "../stores/auth";
+import { useErrorModalStore } from "../stores/error-modal";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
 
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
+const errorModalStore = useErrorModalStore();
 const profile = ref<PublicProfile | null>(null);
 const posts = ref<PostRecord[]>([]);
 const isLoading = ref(false);
@@ -55,6 +57,7 @@ async function loadProfile() {
   const userId = Number(route.params.userId);
   if (!Number.isInteger(userId) || userId <= 0) {
     errorText.value = "Invalid user.";
+    errorModalStore.showError("Invalid user.");
     profile.value = null;
     posts.value = [];
     return;
@@ -96,6 +99,7 @@ async function loadProfile() {
     }
   } catch {
     errorText.value = "Unable to load profile.";
+    errorModalStore.showError("Unable to load profile.");
     profile.value = null;
     posts.value = [];
   } finally {
@@ -104,10 +108,6 @@ async function loadProfile() {
 }
 
 function goBack() {
-  if (window.history.length > 1) {
-    router.back();
-    return;
-  }
   void router.push({ name: "feed" });
 }
 
@@ -191,7 +191,6 @@ watch(
       <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <p v-if="isLoading">Loading profile...</p>
-    <p v-else-if="errorText">{{ errorText }}</p>
     <section v-else-if="profile" class="feed-item profile-summary-card">
       <div class="profile-summary-header">
         <img

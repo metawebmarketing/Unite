@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { fetchProfile } from "../api/profile";
+import { useErrorModalStore } from "../stores/error-modal";
+import { useNotificationsStore } from "../stores/notifications";
 
 const router = useRouter();
 const route = useRoute();
+const errorModalStore = useErrorModalStore();
+const notificationsStore = useNotificationsStore();
 const status = ref("checking");
 const errorText = ref("");
-const attempts = ref(0);
-const maxAttempts = 12;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function checkStatus() {
-  attempts.value += 1;
   try {
     const profile = await fetchProfile();
     const profileStatus = profile.algorithm_profile_status;
@@ -26,21 +26,10 @@ async function checkStatus() {
       return;
     }
     status.value = profileStatus || "processing";
-    if (attempts.value >= maxAttempts) {
-      status.value = "timeout";
-      stopPolling();
-    }
   } catch {
     errorText.value = "Unable to check profile generation status.";
+    errorModalStore.showError("Unable to check profile generation status.");
     status.value = "timeout";
-    stopPolling();
-  }
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
   }
 }
 
@@ -49,15 +38,25 @@ async function continueToFeed() {
 }
 
 onMounted(async () => {
+  notificationsStore.ensureRealtimeConnection();
   await checkStatus();
-  pollTimer = setInterval(async () => {
-    await checkStatus();
-  }, 2500);
 });
 
-onUnmounted(() => {
-  stopPolling();
-});
+watch(
+  () => notificationsStore.profileGenerationStatus,
+  (nextStatus) => {
+    if (!nextStatus) {
+      return;
+    }
+    status.value = nextStatus;
+    if (nextStatus === "ready") {
+      void router.replace(String(route.query.next || "/"));
+    }
+    if (nextStatus === "failed") {
+      status.value = "failed";
+    }
+  },
+);
 </script>
 
 <template>
@@ -72,7 +71,6 @@ onUnmounted(() => {
     <p v-else-if="status === 'timeout'">
       Profile generation is taking longer than expected. You can continue now.
     </p>
-    <p v-if="errorText">{{ errorText }}</p>
     <div v-if="status === 'processing' || status === 'not_started' || status === 'checking'" class="progress-track">
       <div class="progress-fill progress-indeterminate" />
     </div>

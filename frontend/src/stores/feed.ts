@@ -231,12 +231,20 @@ export const useFeedStore = defineStore("feed", {
         this.endAction(actionKey);
       }
     },
-    async replyToPost(postId: number, content: string) {
+    async replyToPost(
+      postId: number,
+      payload: {
+        content: string;
+        link_url?: string;
+        attachments?: Array<{ media_type: "image"; media_url: string }>;
+        tagged_user_ids?: number[];
+      },
+    ) {
       const actionKey = `reply:${postId}`;
       if (this.isActionPending(actionKey)) {
         return;
       }
-      const trimmed = content.trim();
+      const trimmed = String(payload.content || "").trim();
       if (!trimmed) {
         return;
       }
@@ -247,7 +255,13 @@ export const useFeedStore = defineStore("feed", {
         target.data.interaction_counts = { ...counts, reply: counts.reply + 1 };
       }
       try {
-        await reactToPost(postId, { action: "reply", content: trimmed });
+        await reactToPost(postId, {
+          action: "reply",
+          content: trimmed,
+          link_url: payload.link_url,
+          attachments: payload.attachments,
+          tagged_user_ids: payload.tagged_user_ids,
+        });
       } catch {
         // Ignore local rollback to avoid jumping counts during temporary failures.
       } finally {

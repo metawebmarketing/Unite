@@ -4,10 +4,12 @@ import { useRouter } from "vue-router";
 
 import { fetchPinnedPosts, type PostRecord } from "../api/posts";
 import { useAuthStore } from "../stores/auth";
+import { useErrorModalStore } from "../stores/error-modal";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
 
 const router = useRouter();
 const authStore = useAuthStore();
+const errorModalStore = useErrorModalStore();
 const posts = ref<PostRecord[]>([]);
 const isLoading = ref(false);
 const errorText = ref("");
@@ -21,10 +23,6 @@ function formatScore(value: unknown): string {
 }
 
 function goBack() {
-  if (window.history.length > 1) {
-    router.back();
-    return;
-  }
   void router.push({ name: "feed" });
 }
 
@@ -40,6 +38,7 @@ async function loadPinnedPosts() {
   } catch {
     posts.value = [];
     errorText.value = "Unable to load pinned posts.";
+    errorModalStore.showError("Unable to load pinned posts.");
   } finally {
     isLoading.value = false;
   }
@@ -57,7 +56,6 @@ onMounted(() => {
     </button>
     <h1 class="feed-title">Pinned Posts</h1>
     <p v-if="isLoading">Loading pinned posts...</p>
-    <p v-else-if="errorText">{{ errorText }}</p>
     <section v-else class="reply-list">
       <article v-for="post in posts" :key="post.id" class="feed-item clickable-post-card" @click="openPost(post.id)">
         <p>{{ post.content }}</p>

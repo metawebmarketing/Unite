@@ -9,8 +9,10 @@ import {
   type PolicyPack,
   type PolicyResolveResponse,
 } from "../api/policy";
+import { useErrorModalStore } from "../stores/error-modal";
 
 const router = useRouter();
+const errorModalStore = useErrorModalStore();
 const regionCode = ref("global");
 const userKey = ref("sample-user");
 const packs = ref<PolicyPack[]>([]);
@@ -25,10 +27,6 @@ const form = reactive({
 });
 
 function goBack() {
-  if (window.history.length > 1) {
-    router.back();
-    return;
-  }
   void router.push({ name: "feed" });
 }
 
@@ -40,8 +38,10 @@ async function loadPacks() {
     const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
     if (status === 429) {
       errorText.value = "Rate limited while loading policy packs. Please wait a few seconds and retry.";
+      errorModalStore.showError("Rate limited while loading policy packs. Please wait a few seconds and retry.");
     } else {
       errorText.value = "Unable to load policy packs right now.";
+      errorModalStore.showError("Unable to load policy packs right now.");
     }
     packs.value = [];
   }
@@ -70,8 +70,10 @@ async function onCreatePack() {
     statusText.value = "";
     if (status === 429) {
       errorText.value = "Rate limited while creating policy pack. Please wait and try again.";
+      errorModalStore.showError("Rate limited while creating policy pack. Please wait and try again.");
     } else {
       errorText.value = "Unable to create policy pack.";
+      errorModalStore.showError("Unable to create policy pack.");
     }
   }
 }
@@ -84,8 +86,10 @@ async function onResolve() {
     const status = Number((error as { response?: { status?: number } })?.response?.status || 0);
     if (status === 429) {
       errorText.value = "Rate limited while resolving policy. Please retry shortly.";
+      errorModalStore.showError("Rate limited while resolving policy. Please retry shortly.");
     } else {
       errorText.value = "Unable to resolve policy.";
+      errorModalStore.showError("Unable to resolve policy.");
     }
     resolved.value = null;
   }
@@ -109,7 +113,6 @@ onMounted(async () => {
       <p v-if="resolved">
         Active: {{ resolved.version }} ({{ resolved.source }}, {{ resolved.rollout_percentage }}%)
       </p>
-      <p v-if="errorText">{{ errorText }}</p>
     </div>
 
     <hr />
@@ -120,7 +123,6 @@ onMounted(async () => {
       <input v-model.number="form.rollout_percentage" type="number" min="0" max="100" />
       <button type="submit">Create policy pack</button>
       <p v-if="statusText">{{ statusText }}</p>
-      <p v-if="errorText">{{ errorText }}</p>
     </form>
 
     <h2>Policy Packs</h2>

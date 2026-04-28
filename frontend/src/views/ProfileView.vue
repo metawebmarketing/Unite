@@ -191,7 +191,7 @@ export default {
 </script>
 
 <template>
-  <div class="modal-overlay">
+  <div class="modal-overlay" @click.self="onClose">
     <section class="auth-card modal-card">
       <h1>Profile</h1>
       <p v-if="profile.is_ai_account && profile.ai_badge_enabled" class="ai-badge-row">AI account badge enabled</p>
@@ -248,7 +248,7 @@ export default {
       </div>
     </section>
 
-    <div v-if="showCropModal" class="modal-overlay cropper-overlay">
+    <div v-if="showCropModal" class="modal-overlay cropper-overlay" @click.self="closeCropModal">
       <section class="auth-card modal-card">
         <h2>Crop profile image</h2>
         <div class="crop-preview-frame">

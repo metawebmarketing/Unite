@@ -1,0 +1,18 @@
+---
+description: Use full-screen modal overlay pattern with scroll locking
+globs: frontend/src/views/**/*.vue
+alwaysApply: false
+---
+
+# Full-Screen Modal Pattern
+
+- Do not place filter or form popups with absolute positioning inside cards when they are modal interactions.
+- Use the existing full-screen modal pattern:
+  - `v-if` overlay container with `class="modal-overlay"`
+  - inner card with `class="auth-card modal-card"`
+  - close action in modal footer
+- When any modal is open, lock page scroll with:
+  - `document.body.style.overflow = "hidden"`
+  - reset to `""` when closed or on component unmount
+- Prefer one modal state per interaction (for example `showFilterModal`) and wire open/close with explicit handlers.
+- Reuse shared modal classes from `frontend/src/style.css` instead of creating ad-hoc floating panel positioning.

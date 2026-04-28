@@ -6,10 +6,6 @@ import ConnectionsListCard from "../components/ConnectionsListCard.vue";
 const router = useRouter();
 
 function goBack() {
-  if (window.history.length > 1) {
-    router.back();
-    return;
-  }
   void router.push({ name: "feed" });
 }
 </script>

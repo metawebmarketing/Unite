@@ -1,4 +1,5 @@
 from pathlib import Path
+from corsheaders.defaults import default_headers
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -14,11 +15,14 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "corsheaders",
+    "channels",
     "rest_framework",
     "rest_framework_simplejwt",
     "apps.accounts",
     "apps.connections",
     "apps.posts",
+    "apps.messaging",
+    "apps.notifications",
     "apps.feed",
     "apps.interests",
     "apps.moderation",
@@ -121,6 +125,10 @@ REST_FRAMEWORK = {
         "post_write_ai": "10/minute",
         "post_react": "120/minute",
         "post_react_ai": "60/minute",
+        "post_upload_image": "120/minute",
+        "messages_list": "240/minute",
+        "messages_send": "90/minute",
+        "messages_send_ai": "45/minute",
         "connect_action": "60/minute",
         "connect_action_ai": "30/minute",
         "ai_signup": "5/minute",
@@ -130,6 +138,9 @@ REST_FRAMEWORK = {
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "idempotency-key",
+]
 
 UNITE_SUGGESTION_INTERVAL = 3
 UNITE_AD_INTERVAL = 0
@@ -138,6 +149,20 @@ UNITE_FEED_CACHE_TTL_SECONDS = 30
 
 CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_RESULT_BACKEND = "redis://localhost:6379/0"
+UNITE_WS_REDIS_URL = "redis://localhost:6379/1"
+if DEBUG:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [UNITE_WS_REDIS_URL]},
+        }
+    }
 CELERY_BEAT_SCHEDULE = {
     "refresh-active-profiles-every-15m": {
         "task": "apps.accounts.tasks.refresh_active_profile_scores",
@@ -151,6 +176,7 @@ CELERY_BEAT_SCHEDULE = {
 
 UNITE_ENABLE_REMOTE_LINK_FETCH = False
 UNITE_LINK_PREVIEW_TTL_SECONDS = 86400
+UNITE_DM_MAX_MESSAGE_CHARS = 2000
 UNITE_SPAM_BURST_WINDOW_SECONDS = 60
 UNITE_SPAM_BURST_MAX_POSTS = 5
 UNITE_SPAM_LINK_WINDOW_SECONDS = 600
@@ -168,4 +194,8 @@ UNITE_FEED_SUPPRESSED_CATEGORIES = [
     "illegal_promotion",
 ]
 UNITE_PROFILE_IMAGE_SIZE = 256
+UNITE_POST_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+UNITE_POST_IMAGE_MAX_WIDTH = 1280
+UNITE_POST_IMAGE_MAX_HEIGHT = 1280
+UNITE_POST_IMAGE_QUALITY = 80
 UNITE_ALLOW_LOCAL_DEMO_RESET = False

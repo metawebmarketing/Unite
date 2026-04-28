@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import { connectToUser, disconnectFromUser, fetchConnections, type ConnectionListItem } from "../api/connections";
+import { fetchDMUserSuggestions, type DMUserSuggestion } from "../api/messages";
+import { useErrorModalStore } from "../stores/error-modal";
 
 const props = withDefaults(
   defineProps<{
@@ -18,6 +20,7 @@ const props = withDefaults(
 );
 
 const router = useRouter();
+const errorModalStore = useErrorModalStore();
 const items = ref<ConnectionListItem[]>([]);
 const nextCursor = ref<string | null>(null);
 const hasMore = ref(true);
@@ -29,11 +32,18 @@ const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
 const searchText = ref("");
 const fromProfileFilter = ref("");
+const fromProfileDraft = ref("");
 const afterDateFilter = ref("");
 const beforeDateFilter = ref("");
 const isFilterMenuOpen = ref(false);
+const fromProfileWrapRef = ref<HTMLElement | null>(null);
+const fromProfileSuggestions = ref<DMUserSuggestion[]>([]);
+const showFromProfileSuggestionBox = ref(false);
+const isFromProfileInputFocused = ref(false);
+const isLoadingFromProfileSuggestions = ref(false);
 let observer: IntersectionObserver | null = null;
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
+let fromProfileSuggestionTimer: ReturnType<typeof setTimeout> | null = null;
 const minSearchChars = 3;
 
 const hasAnyFilters = computed(
@@ -81,6 +91,7 @@ async function loadConnections(reset = false) {
     hasMore.value = page.has_more;
   } catch {
     errorText.value = "Unable to load connections.";
+    errorModalStore.showError("Unable to load connections.");
   } finally {
     isLoading.value = false;
   }
@@ -101,8 +112,66 @@ function scheduleFilterReload() {
 function clearFilters() {
   searchText.value = "";
   fromProfileFilter.value = "";
+  fromProfileDraft.value = "";
+  fromProfileSuggestions.value = [];
+  showFromProfileSuggestionBox.value = false;
   afterDateFilter.value = "";
   beforeDateFilter.value = "";
+}
+
+function closeFilterModal() {
+  isFilterMenuOpen.value = false;
+}
+
+function selectFromProfileSuggestion(suggestion: DMUserSuggestion) {
+  fromProfileDraft.value = suggestion.username;
+  fromProfileFilter.value = suggestion.username;
+  fromProfileSuggestions.value = [];
+  showFromProfileSuggestionBox.value = false;
+}
+
+function scheduleFromProfileSuggestionFetch() {
+  if (fromProfileSuggestionTimer) {
+    clearTimeout(fromProfileSuggestionTimer);
+    fromProfileSuggestionTimer = null;
+  }
+  fromProfileSuggestionTimer = setTimeout(async () => {
+    const query = fromProfileDraft.value.trim();
+    if (query.length < 3) {
+      showFromProfileSuggestionBox.value = false;
+      fromProfileSuggestions.value = [];
+      return;
+    }
+    showFromProfileSuggestionBox.value = isFromProfileInputFocused.value;
+    isLoadingFromProfileSuggestions.value = true;
+    try {
+      fromProfileSuggestions.value = await fetchDMUserSuggestions(query, 50);
+      showFromProfileSuggestionBox.value = isFromProfileInputFocused.value && fromProfileSuggestions.value.length > 0;
+    } catch {
+      fromProfileSuggestions.value = [];
+      showFromProfileSuggestionBox.value = false;
+    } finally {
+      isLoadingFromProfileSuggestions.value = false;
+    }
+  }, 220);
+}
+
+function onFromProfileInputFocus() {
+  isFromProfileInputFocused.value = true;
+  if (fromProfileDraft.value.trim().length >= 3) {
+    showFromProfileSuggestionBox.value = true;
+  }
+}
+
+function onDocumentPointerDown(event: MouseEvent) {
+  const targetNode = event.target as Node | null;
+  if (!targetNode) {
+    return;
+  }
+  if (fromProfileWrapRef.value && !fromProfileWrapRef.value.contains(targetNode)) {
+    isFromProfileInputFocused.value = false;
+    showFromProfileSuggestionBox.value = false;
+  }
 }
 
 function openProfile(userId: number) {
@@ -159,6 +228,7 @@ function closeCopyLinkModal() {
 }
 
 onMounted(() => {
+  document.addEventListener("mousedown", onDocumentPointerDown);
   observer = new IntersectionObserver(
     (entries) => {
       if (entries[0]?.isIntersecting) {
@@ -176,6 +246,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("mousedown", onDocumentPointerDown);
   if (observer) {
     observer.disconnect();
   }
@@ -183,6 +254,11 @@ onUnmounted(() => {
     clearTimeout(filterTimer);
     filterTimer = null;
   }
+  if (fromProfileSuggestionTimer) {
+    clearTimeout(fromProfileSuggestionTimer);
+    fromProfileSuggestionTimer = null;
+  }
+  document.body.style.overflow = "";
 });
 
 watch(
@@ -197,6 +273,21 @@ watch(
 
 watch([searchText, fromProfileFilter, afterDateFilter, beforeDateFilter], () => {
   scheduleFilterReload();
+});
+
+watch(fromProfileDraft, () => {
+  fromProfileFilter.value = fromProfileDraft.value.trim();
+  scheduleFromProfileSuggestionFetch();
+});
+
+watch(isFilterMenuOpen, (isOpen) => {
+  if (isOpen) {
+    fromProfileDraft.value = fromProfileFilter.value;
+  } else {
+    isFromProfileInputFocused.value = false;
+    showFromProfileSuggestionBox.value = false;
+  }
+  document.body.style.overflow = isOpen ? "hidden" : "";
 });
 </script>
 
@@ -215,28 +306,13 @@ export default {
       <div class="search-input-row">
         <svg viewBox="0 0 24 24" class="icon"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <input v-model="searchText" type="text" placeholder="Search" />
-        <button type="button" class="icon-only-button small-round-button" @click="isFilterMenuOpen = !isFilterMenuOpen">
+        <button type="button" class="icon-only-button small-round-button" @click="isFilterMenuOpen = true">
           <svg viewBox="0 0 24 24" class="icon"><path d="M6 8h12M8 12h8M10 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         </button>
       </div>
       <p v-if="props.mode === 'users' && searchText.trim().length < minSearchChars" class="suggestion-meta">
         Type at least {{ minSearchChars }} characters to search.
       </p>
-      <div v-if="isFilterMenuOpen" class="connections-filter-menu">
-        <label class="connections-filter-row">
-          <span>After date</span>
-          <input v-model="afterDateFilter" type="date" />
-        </label>
-        <label class="connections-filter-row">
-          <span>Before date</span>
-          <input v-model="beforeDateFilter" type="date" />
-        </label>
-        <label class="connections-filter-row">
-          <span>From profile</span>
-          <input v-model="fromProfileFilter" type="text" placeholder="username or name" />
-        </label>
-        <button v-if="hasAnyFilters" type="button" @click="clearFilters">Clear filters</button>
-      </div>
     </div>
 
     <article v-for="connection in items" :key="connection.connection_id" class="connection-row">
@@ -276,14 +352,58 @@ export default {
       <p v-else-if="hasMore">Scroll to load more</p>
       <p v-else-if="items.length">End of list</p>
       <p v-else>No connections found.</p>
-      <p v-if="errorText">{{ errorText }}</p>
     </div>
-    <div v-if="showCopyLinkModal" class="modal-overlay">
+    <div v-if="showCopyLinkModal" class="modal-overlay" @click.self="closeCopyLinkModal">
       <section class="auth-card modal-card">
         <h2>Copy profile link</h2>
         <input :value="copyLinkFallbackValue" readonly />
         <div class="modal-actions">
           <button type="button" @click="closeCopyLinkModal">Close</button>
+        </div>
+      </section>
+    </div>
+    <div v-if="isFilterMenuOpen" class="modal-overlay" @click.self="closeFilterModal">
+      <section class="auth-card modal-card mention-host-card filter-modal-card">
+        <h2>Filter {{ props.mode === "users" ? "search" : "connections" }}</h2>
+        <label class="connections-filter-row">
+          <span>After date</span>
+          <input v-model="afterDateFilter" type="date" />
+        </label>
+        <label class="connections-filter-row">
+          <span>Before date</span>
+          <input v-model="beforeDateFilter" type="date" />
+        </label>
+        <label class="connections-filter-row">
+          <span>From profile</span>
+          <div ref="fromProfileWrapRef" class="dm-recipient-wrap">
+            <input
+              v-model="fromProfileDraft"
+              type="text"
+              placeholder="username or name"
+              autocomplete="off"
+              @focus="onFromProfileInputFocus"
+            />
+            <div v-if="showFromProfileSuggestionBox" class="dm-suggestion-box">
+              <p v-if="isLoadingFromProfileSuggestions" class="suggestion-meta">Loading...</p>
+              <button
+                v-for="suggestion in fromProfileSuggestions"
+                :key="`connections-filter-${suggestion.user_id}`"
+                type="button"
+                class="dm-suggestion-item"
+                @click="selectFromProfileSuggestion(suggestion)"
+              >
+                <span>@{{ suggestion.username }}</span>
+                <span class="suggestion-meta">{{ suggestion.display_name }}</span>
+              </button>
+              <p v-if="!isLoadingFromProfileSuggestions && fromProfileSuggestions.length === 0" class="suggestion-meta">
+                No matches.
+              </p>
+            </div>
+          </div>
+        </label>
+        <div class="modal-actions">
+          <button v-if="hasAnyFilters" type="button" @click="clearFilters">Clear filters</button>
+          <button type="button" @click="closeFilterModal">Close</button>
         </div>
       </section>
     </div>

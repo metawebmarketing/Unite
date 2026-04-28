@@ -1,5 +1,4 @@
-const SHELL_CACHE = "unite-shell-v2";
-const FEED_CACHE = "unite-feed-v2";
+const SHELL_CACHE = "unite-shell-v3";
 const SHELL_ASSETS = ["/", "/manifest.webmanifest", "/favicon.svg"];
 const QUEUE_DB_NAME = "unite-offline-db";
 const QUEUE_DB_VERSION = 1;
@@ -17,7 +16,7 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((key) => ![SHELL_CACHE, FEED_CACHE].includes(key))
+          .filter((key) => ![SHELL_CACHE].includes(key))
           .map((key) => caches.delete(key)),
       ),
     ),
@@ -27,12 +26,12 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
-  if (isMutableApiRequest(event.request, requestUrl)) {
-    event.respondWith(handleMutableApiRequest(event.request));
-    return;
-  }
-  if (requestUrl.pathname.startsWith("/api/v1/feed")) {
-    event.respondWith(networkFirstWithCacheFallback(event.request, FEED_CACHE));
+  if (requestUrl.pathname.startsWith("/api/")) {
+    if (isMutableApiRequest(event.request, requestUrl)) {
+      event.respondWith(handleMutableApiRequest(event.request));
+      return;
+    }
+    event.respondWith(fetch(event.request));
     return;
   }
   if (event.request.mode === "navigate") {
@@ -57,29 +56,6 @@ self.addEventListener("message", (event) => {
     event.waitUntil(registerSync());
   }
 });
-
-async function networkFirstWithCacheFallback(request, cacheName) {
-  const cache = await caches.open(cacheName);
-  try {
-    const response = await fetch(request);
-    if (response.ok) {
-      cache.put(request, response.clone());
-    }
-    return response;
-  } catch {
-    const cached = await cache.match(request);
-    if (cached) {
-      return cached;
-    }
-    return new Response(
-      JSON.stringify({ items: [], next_cursor: null, has_more: false, organic_count: 0 }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-}
 
 function isMutableApiRequest(request, requestUrl) {
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {

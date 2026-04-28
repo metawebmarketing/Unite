@@ -12,8 +12,8 @@ const userId = computed(() => {
 });
 
 function goBack() {
-  if (window.history.length > 1) {
-    router.back();
+  if (route.name === "user-connections" && userId.value) {
+    void router.push({ name: "user-profile", params: { userId: userId.value } });
     return;
   }
   void router.push({ name: "feed" });

@@ -6,8 +6,10 @@ import { fetchInterestSuggestions, type InterestSuggestion } from "../api/intere
 import { submitOnboardingInterests } from "../api/onboarding";
 import { fetchProfile } from "../api/profile";
 import { DEFAULT_INTEREST_SUGGESTIONS } from "../constants/interests";
+import { useErrorModalStore } from "../stores/error-modal";
 
 const router = useRouter();
+const errorModalStore = useErrorModalStore();
 const form = reactive({
   interests: "",
   location: "",
@@ -78,6 +80,7 @@ async function onSubmit() {
   const tags = chips.value;
   if (tags.length < 5) {
     errorText.value = "Add at least 5 interests.";
+    errorModalStore.showError("Add at least 5 interests.");
     return;
   }
   errorText.value = "";
@@ -140,7 +143,6 @@ watch(
           <button type="button" class="chip-remove" @click="removeChip(chip)">x</button>
         </span>
       </div>
-      <p v-if="errorText">{{ errorText }}</p>
       <button type="submit">Save onboarding</button>
       <div v-if="isBusy" class="progress-track"><div class="progress-fill progress-indeterminate" /></div>
     </form>

@@ -1,0 +1,24 @@
+---
+description: Route user-facing errors through global error modal
+globs: frontend/src/**/*.{vue,ts}
+alwaysApply: false
+---
+
+# Error Display Standard
+
+- Do not render user-facing API or validation errors inline in pages (for example: `<p>{{ errorText }}</p>`).
+- Surface user-facing errors via the global error modal using `useErrorModalStore().showError(...)`.
+- Keep local `errorText` only for internal state/branching when needed, not for visible page text.
+- For `catch` handlers, call `showError(...)` with a specific message (include status-specific copy when available).
+- For shared API failures, prefer interceptor-driven modal errors and avoid duplicating inline error UI.
+
+## Example
+
+```ts
+// ❌ Inline page error rendering pattern
+errorText.value = "Unable to load messages.";
+
+// ✅ Global modal pattern
+const errorModalStore = useErrorModalStore();
+errorModalStore.showError("Unable to load messages.");
+```

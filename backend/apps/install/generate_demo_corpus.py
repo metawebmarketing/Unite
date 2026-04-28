@@ -3,10 +3,18 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
+from urllib.parse import quote_plus, urlparse
 
 TARGET_COUNT = 10_000
 OUTPUT_PATH = Path(__file__).resolve().parent / "data" / "demo_posts_10000.json"
 TOXIC_RATIO = 0.06
+SEARCH_ENGINE_LINK_PATTERNS = [
+    "https://www.google.com/search?q={query}",
+    "https://www.bing.com/search?q={query}",
+    "https://search.yahoo.com/search?p={query}",
+    "https://duckduckgo.com/?q={query}",
+    "https://www.ecosia.org/search?q={query}",
+]
 
 
 def build_entry(rng: random.Random, index: int) -> dict:
@@ -172,13 +180,15 @@ def build_entry(rng: random.Random, index: int) -> dict:
     link_url = ""
     link_preview: dict = {}
     if rng.random() < 0.27:
-        slug_topic = topic.replace(" ", "-")
-        slug_interest = interest_a.replace(" ", "-")
-        link_url = f"https://journal.example.com/{slug_interest}/{slug_topic}/{index + 1}"
+        search_phrase = f"{interest_a} {topic} {city} {index + 1}"
+        query = quote_plus(search_phrase)
+        pattern = rng.choice(SEARCH_ENGINE_LINK_PATTERNS)
+        link_url = pattern.format(query=query)
+        link_host = urlparse(link_url).netloc.lower()
         link_preview = {
             "title": f"{city} team notes on {topic}",
             "description": "Detailed log with timeline, trade-offs, and follow-up actions.",
-            "host": "journal.example.com",
+            "host": link_host,
             "url": link_url,
         }
 

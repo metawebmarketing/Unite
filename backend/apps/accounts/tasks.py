@@ -7,6 +7,7 @@ from datetime import timedelta
 from apps.accounts.models import Profile, ProfileActionScore
 from apps.accounts.ranking import recompute_profile_rank_rollups
 from apps.moderation.services import evaluate_profile_content
+from apps.notifications.services import push_realtime_event
 from apps.posts.models import Post
 from apps.posts.models import PostInteraction
 
@@ -19,6 +20,11 @@ def generate_algorithm_profile(profile_id: int, region_code: str = "global") -> 
 
     profile.algorithm_profile_status = Profile.AlgorithmProfileStatus.PROCESSING
     profile.save(update_fields=["algorithm_profile_status", "updated_at"])
+    push_realtime_event(
+        user_id=profile.user_id,
+        event_type="profile.generation_status",
+        payload={"status": Profile.AlgorithmProfileStatus.PROCESSING},
+    )
 
     try:
         vector = _build_profile_vector(profile)
@@ -26,10 +32,20 @@ def generate_algorithm_profile(profile_id: int, region_code: str = "global") -> 
         evaluate_profile_content(profile=profile, region_code=region_code)
         profile.algorithm_profile_status = Profile.AlgorithmProfileStatus.READY
         profile.save(update_fields=["algorithm_vector", "algorithm_profile_status", "updated_at"])
+        push_realtime_event(
+            user_id=profile.user_id,
+            event_type="profile.generation_status",
+            payload={"status": Profile.AlgorithmProfileStatus.READY},
+        )
         return {"status": "ok", "profile_id": profile_id}
     except Exception as exc:
         profile.algorithm_profile_status = Profile.AlgorithmProfileStatus.FAILED
         profile.save(update_fields=["algorithm_profile_status", "updated_at"])
+        push_realtime_event(
+            user_id=profile.user_id,
+            event_type="profile.generation_status",
+            payload={"status": Profile.AlgorithmProfileStatus.FAILED},
+        )
         return {"status": "failed", "profile_id": profile_id, "error": str(exc)}
 
 

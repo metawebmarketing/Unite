@@ -14,6 +14,7 @@ from apps.accounts.models import Profile
 from apps.connections.models import Connection
 from apps.connections.serializers import ConnectionSerializer
 from apps.feed.cache_utils import bump_user_feed_cache_version
+from apps.notifications.services import create_notification
 
 User = get_user_model()
 
@@ -332,6 +333,14 @@ class ConnectUserView(APIView):
             reverse.save(update_fields=["status", "updated_at"])
         bump_user_feed_cache_version(request.user.id)
         bump_user_feed_cache_version(user_id)
+        create_notification(
+            recipient_user_id=user_id,
+            actor_user_id=request.user.id,
+            event_type="connection.accepted",
+            title="New connection",
+            message=f"@{request.user.username} connected with you.",
+            payload={"connection_id": int(connection.id), "user_id": int(request.user.id)},
+        )
 
         serializer = ConnectionSerializer(connection)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
