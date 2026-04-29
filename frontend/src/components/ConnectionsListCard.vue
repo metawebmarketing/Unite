@@ -2,7 +2,15 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
-import { connectToUser, disconnectFromUser, fetchConnections, type ConnectionListItem } from "../api/connections";
+import {
+  approveConnection,
+  connectToUser,
+  denyConnection,
+  disconnectFromUser,
+  fetchConnections,
+  fetchPendingConnections,
+  type ConnectionListItem,
+} from "../api/connections";
 import { fetchDMUserSuggestions, type DMUserSuggestion } from "../api/messages";
 import { useErrorModalStore } from "../stores/error-modal";
 
@@ -36,6 +44,7 @@ const fromProfileDraft = ref("");
 const afterDateFilter = ref("");
 const beforeDateFilter = ref("");
 const isFilterMenuOpen = ref(false);
+const pendingItems = ref<ConnectionListItem[]>([]);
 const fromProfileWrapRef = ref<HTMLElement | null>(null);
 const fromProfileSuggestions = ref<DMUserSuggestion[]>([]);
 const showFromProfileSuggestionBox = ref(false);
@@ -94,6 +103,19 @@ async function loadConnections(reset = false) {
     errorModalStore.showError("Unable to load connections.");
   } finally {
     isLoading.value = false;
+  }
+}
+
+async function loadPendingConnections() {
+  if (props.mode !== "connections" || props.userId !== null) {
+    pendingItems.value = [];
+    return;
+  }
+  try {
+    const response = await fetchPendingConnections();
+    pendingItems.value = response.items || [];
+  } catch {
+    pendingItems.value = [];
   }
 }
 
@@ -222,6 +244,25 @@ async function connectUser(userId: number) {
   }
 }
 
+async function approvePendingUser(userId: number) {
+  try {
+    await approveConnection(userId);
+    pendingItems.value = pendingItems.value.filter((item) => item.user_id !== userId);
+    void loadConnections(true);
+  } catch {
+    // Keep list usable even when approval fails.
+  }
+}
+
+async function denyPendingUser(userId: number) {
+  try {
+    await denyConnection(userId);
+    pendingItems.value = pendingItems.value.filter((item) => item.user_id !== userId);
+  } catch {
+    // Keep list usable even when deny fails.
+  }
+}
+
 function closeCopyLinkModal() {
   showCopyLinkModal.value = false;
   copyLinkFallbackValue.value = "";
@@ -242,6 +283,7 @@ onMounted(() => {
   }
   if (props.mode === "connections") {
     void loadConnections(true);
+    void loadPendingConnections();
   }
 });
 
@@ -268,6 +310,7 @@ watch(
     nextCursor.value = null;
     hasMore.value = true;
     void loadConnections(true);
+    void loadPendingConnections();
   },
 );
 
@@ -315,6 +358,29 @@ export default {
       </p>
     </div>
 
+    <section v-if="props.mode === 'connections' && props.userId === null && pendingItems.length" class="stack">
+      <h3>Pending Approvals</h3>
+      <article v-for="pending in pendingItems" :key="`pending-${pending.connection_id}`" class="feed-item connection-row">
+        <button type="button" class="author-link feed-avatar-button" @click="openProfile(pending.user_id)">
+          <img
+            :src="pending.profile_image_url || placeholderAvatar(pending.display_name)"
+            alt="Profile"
+            class="feed-avatar"
+          />
+        </button>
+        <div class="connection-main">
+          <button type="button" class="author-link" @click="openProfile(pending.user_id)">
+            {{ pending.display_name }}
+          </button>
+          <p class="suggestion-meta">@{{ pending.username }}</p>
+        </div>
+        <div class="post-actions">
+          <button type="button" class="icon-action-button" @click="approvePendingUser(pending.user_id)">Approve</button>
+          <button type="button" class="icon-action-button" @click="denyPendingUser(pending.user_id)">Deny</button>
+        </div>
+      </article>
+    </section>
+
     <article v-for="connection in items" :key="connection.connection_id" class="connection-row">
       <button type="button" class="author-link feed-avatar-button" @click="openProfile(connection.user_id)">
         <img
@@ -329,6 +395,14 @@ export default {
         </button>
         <p class="suggestion-meta">Shared interests: {{ connection.shared_interest_count }}</p>
       </div>
+      <button
+        v-if="props.mode === 'connections'"
+        type="button"
+        class="icon-action-button"
+        @click="disconnectUser(connection.user_id)"
+      >
+        Remove
+      </button>
       <div class="post-menu-wrap">
         <button type="button" class="post-menu-trigger" @click="toggleMenu(connection.user_id)">
           <svg viewBox="0 0 24 24" class="icon"><circle cx="6" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="18" cy="12" r="1.8" fill="currentColor"/></svg>

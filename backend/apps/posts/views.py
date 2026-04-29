@@ -18,6 +18,7 @@ from apps.accounts.ranking import (
     record_profile_action_score,
     score_post_sentiment,
 )
+from apps.accounts.models import Profile
 from apps.ai_accounts.services import log_ai_action
 from apps.moderation.models import ModerationFlag
 from apps.moderation.services import is_content_blocked
@@ -47,8 +48,8 @@ def get_request_ip_address(request) -> str | None:
 
 
 def build_post_queryset_for_user(user):
-    return (
-        Post.objects.select_related("author")
+    queryset = (
+        Post.objects.select_related("author", "author__profile", "author__ai_account")
         .prefetch_related("attachments")
         .annotate(
             like_count=Count(
@@ -91,10 +92,39 @@ def build_post_queryset_for_user(user):
             ),
         )
     )
+    if bool(getattr(user, "is_staff", False)):
+        return queryset
+    blocked_pairs = Connection.objects.filter(status=Connection.Status.BLOCKED).filter(
+        Q(requester=user) | Q(recipient=user)
+    ).values_list("requester_id", "recipient_id")
+    blocked_user_ids: set[int] = set()
+    for requester_id, recipient_id in blocked_pairs:
+        if int(requester_id) != user.id:
+            blocked_user_ids.add(int(requester_id))
+        if int(recipient_id) != user.id:
+            blocked_user_ids.add(int(recipient_id))
+    connected_pairs = Connection.objects.filter(status=Connection.Status.ACCEPTED).filter(
+        Q(requester=user) | Q(recipient=user)
+    ).values_list("requester_id", "recipient_id")
+    connected_user_ids = {user.id}
+    for requester_id, recipient_id in connected_pairs:
+        connected_user_ids.add(int(requester_id))
+        connected_user_ids.add(int(recipient_id))
+    hidden_private_user_ids = set(
+        Profile.objects.filter(is_private_profile=True)
+        .exclude(user_id__in=connected_user_ids)
+        .values_list("user_id", flat=True)
+    )
+    if blocked_user_ids:
+        queryset = queryset.exclude(author_id__in=blocked_user_ids)
+    if hidden_private_user_ids:
+        queryset = queryset.exclude(author_id__in=hidden_private_user_ids)
+    return queryset
 
 
-def serialize_post_with_author(post, request) -> dict:
-    ensure_post_sentiment(post)
+def serialize_post_with_author(post, request, *, ensure_sentiment: bool = True) -> dict:
+    if ensure_sentiment:
+        ensure_post_sentiment(post)
     payload = dict(PostSerializer(post).data)
     payload["interaction_counts"] = {
         "like": post.like_count,
@@ -403,7 +433,7 @@ class PostReactView(APIView):
         link_url = serializer.validated_data.get("link_url", "")
         attachments = serializer.validated_data.get("attachments", [])
         tagged_user_ids = serializer.validated_data.get("tagged_user_ids", [])
-        post = Post.objects.filter(id=post_id).first()
+        post = build_post_queryset_for_user(request.user).filter(id=post_id).first()
         if not post:
             response_payload = {"detail": "Post not found."}
             if idempotency_key:
@@ -690,7 +720,7 @@ class UserPostListView(APIView):
             .filter(author_id=user_id, parent_post__isnull=True)
             .order_by("-is_pinned", "-created_at")[:50]
         )
-        return Response([serialize_post_with_author(post, request) for post in posts])
+        return Response([serialize_post_with_author(post, request, ensure_sentiment=False) for post in posts])
 
 
 class BookmarkedPostListView(APIView):
@@ -702,7 +732,7 @@ class BookmarkedPostListView(APIView):
             .order_by("-created_at")
             .distinct()[:50]
         )
-        return Response([serialize_post_with_author(post, request) for post in posts])
+        return Response([serialize_post_with_author(post, request, ensure_sentiment=False) for post in posts])
 
 
 class PinnedPostListView(APIView):
@@ -712,7 +742,7 @@ class PinnedPostListView(APIView):
             .filter(author=request.user, is_pinned=True, parent_post__isnull=True)
             .order_by("-updated_at", "-created_at")[:50]
         )
-        return Response([serialize_post_with_author(post, request) for post in posts])
+        return Response([serialize_post_with_author(post, request, ensure_sentiment=False) for post in posts])
 
 
 class PostPinView(APIView):

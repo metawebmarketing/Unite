@@ -159,10 +159,10 @@ watch(
             min="1"
             max="5000"
             step="1"
-            placeholder="Posts per demo user"
+            placeholder="Conversations per demo user"
             required
           />
-          <p>Estimated total posts: {{ resolveSeedTotalPosts() }}</p>
+          <p>Estimated total conversations: {{ resolveSeedTotalPosts() }}</p>
         </div>
         <button type="submit">Install Unite</button>
         <p v-if="statusText">{{ statusText }}</p>
@@ -175,7 +175,7 @@ watch(
             <div class="progress-fill" :style="{ width: `${userProgressPercent}%` }" />
           </div>
           <p>
-            Accounts: {{ installStatus.seed_created_users }} / {{ installStatus.seed_total_users }} · Posts:
+            Accounts: {{ installStatus.seed_created_users }} / {{ installStatus.seed_total_users }} · Conversations:
             {{ installStatus.seed_created_posts }} / {{ installStatus.seed_total_posts }}
           </p>
           <p v-if="installStatus.seed_last_message">{{ installStatus.seed_last_message }}</p>
@@ -198,7 +198,7 @@ watch(
           Records: {{ createdRecordCount }} / {{ totalRecordCount }}
         </p>
         <p>
-          Accounts: {{ installStatus.seed_created_users }} / {{ installStatus.seed_total_users }} · Posts:
+          Accounts: {{ installStatus.seed_created_users }} / {{ installStatus.seed_total_users }} · Conversations:
           {{ installStatus.seed_created_posts }} / {{ installStatus.seed_total_posts }}
         </p>
         <p v-if="installStatus.seed_last_message">{{ installStatus.seed_last_message }}</p>

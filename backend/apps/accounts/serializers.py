@@ -1,3 +1,6 @@
+import re
+from urllib.parse import urlparse
+
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
@@ -11,6 +14,7 @@ from apps.accounts.models import Profile
 from apps.connections.models import Connection
 
 User = get_user_model()
+URL_CANDIDATE_REGEX = re.compile(r"(https?://[^\s<>\"']+)", re.IGNORECASE)
 
 
 class SignupSerializer(serializers.Serializer):
@@ -37,6 +41,7 @@ class LoginSerializer(serializers.Serializer):
 
 
 class ProfileSerializer(serializers.ModelSerializer):
+    profile_link_url = serializers.CharField(required=False, allow_blank=True, max_length=2000)
     is_ai_account = serializers.SerializerMethodField()
     ai_badge_enabled = serializers.SerializerMethodField()
     is_staff = serializers.SerializerMethodField()
@@ -71,11 +76,36 @@ class ProfileSerializer(serializers.ModelSerializer):
         return obj.user_id
 
     def get_connection_count(self, obj):
-        return Connection.objects.filter(
+        outgoing = Connection.objects.filter(
             status=Connection.Status.ACCEPTED,
-        ).filter(
-            Q(requester_id=obj.user_id) | Q(recipient_id=obj.user_id)
+            requester_id=obj.user_id,
         ).count()
+        incoming = Connection.objects.filter(
+            status=Connection.Status.ACCEPTED,
+            recipient_id=obj.user_id,
+        ).count()
+        return int(outgoing + incoming)
+
+    def validate_profile_link_url(self, value):
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            return ""
+        for match in URL_CANDIDATE_REGEX.findall(raw_value):
+            candidate = str(match).rstrip("),.;!?")
+            parsed = urlparse(candidate)
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                return candidate
+        raise serializers.ValidationError("Profile link must include a valid http/https URL.")
+
+    def validate(self, attrs):
+        receive_notifications = attrs.get(
+            "receive_notifications",
+            getattr(self.instance, "receive_notifications", True),
+        )
+        if not bool(receive_notifications):
+            attrs["receive_email_notifications"] = False
+            attrs["receive_push_notifications"] = False
+        return attrs
 
     class Meta:
         model = Profile
@@ -83,7 +113,13 @@ class ProfileSerializer(serializers.ModelSerializer):
             "display_name",
             "bio",
             "location",
+            "profile_link_url",
             "interests",
+            "receive_notifications",
+            "receive_email_notifications",
+            "receive_push_notifications",
+            "is_private_profile",
+            "require_connection_approval",
             "is_ai_account",
             "ai_badge_enabled",
             "is_staff",

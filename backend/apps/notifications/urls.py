@@ -5,4 +5,5 @@ from apps.notifications.views import NotificationListView, NotificationMarkAllRe
 urlpatterns = [
     path("", NotificationListView.as_view(), name="notification-list"),
     path("mark-all-read", NotificationMarkAllReadView.as_view(), name="notification-mark-all-read"),
+    path("mark-all-read/", NotificationMarkAllReadView.as_view(), name="notification-mark-all-read-slash"),
 ]

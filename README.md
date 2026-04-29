@@ -6,7 +6,7 @@ Implementation scaffold for the Unite social network plan.
 
 1. `python -m pip install -r backend/requirements.txt`
 2. `python backend/manage.py migrate`
-3. `python backend/manage.py runserver`
+3. `cd backend && python -m daphne -b 127.0.0.1 -p 8000 config.asgi:application`
 
 ### Sentiment ranking runtime requirements
 
@@ -32,7 +32,8 @@ Implementation scaffold for the Unite social network plan.
 1. Start backend (from repo root):
    - `python -m pip install -r backend/requirements.txt`
    - `python backend/manage.py migrate`
-   - `python backend/manage.py runserver`
+   - `cd backend && python -m daphne -b 127.0.0.1 -p 8000 config.asgi:application`
+   - (`runserver` works for basic HTTP endpoints, but realtime notifications/websockets require Daphne/ASGI)
 2. Start frontend in a second terminal:
    - `cd frontend`
    - `npm install`

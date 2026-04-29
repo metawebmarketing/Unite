@@ -48,6 +48,15 @@ export const useNotificationsStore = defineStore("notifications", {
         onStateChange: (state) => {
           this.isSocketConnected = state === "connected";
         },
+        onAuthFailure: async () => {
+          const refreshedToken = await authStore.refreshAccessToken().catch(() => null);
+          if (refreshedToken) {
+            return true;
+          }
+          this.initialized = false;
+          authStore.handleUnauthorized();
+          return false;
+        },
       });
     },
     disconnectRealtime() {

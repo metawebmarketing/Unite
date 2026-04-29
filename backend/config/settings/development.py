@@ -2,6 +2,11 @@ from .base import *  # noqa: F403,F401
 
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
 UNITE_ALLOW_LOCAL_DEMO_RESET = True

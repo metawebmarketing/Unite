@@ -182,3 +182,18 @@ class MessagingApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 201)
+
+    def test_send_message_link_url_keeps_first_valid_url_when_multiple_provided(self):
+        thread_id = self._create_thread(self.user_a, self.user_b.id)
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.post(
+            f"/api/v1/messages/threads/{thread_id}/messages",
+            {
+                "content": "Links here",
+                "link_url": "https://first.example.com/message and https://second.example.com/message",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        message = DMMessage.objects.get(id=response.data["id"])
+        self.assertEqual(message.link_preview.get("url"), "https://first.example.com/message")

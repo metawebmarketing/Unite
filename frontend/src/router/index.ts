@@ -58,7 +58,7 @@ const router = createRouter({
     {
       path: "/profile",
       name: "profile",
-      redirect: { name: "feed", query: { modal: "profile" } },
+      component: () => import("../views/ProfileView.vue"),
       meta: { requiresAuth: true },
     },
     {

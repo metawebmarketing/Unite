@@ -11,6 +11,7 @@ interface ConnectOptions {
   getToken: () => string | null;
   onEvent: (event: RealtimeEvent) => void;
   onStateChange?: (state: ConnectionState) => void;
+  onAuthFailure?: () => Promise<boolean> | boolean;
 }
 
 class RealtimeSocketService {
@@ -63,9 +64,19 @@ class RealtimeSocketService {
         // Ignore malformed realtime payloads.
       }
     };
-    this.socket.onclose = () => {
+    this.socket.onclose = async (event) => {
       options.onStateChange?.("disconnected");
       this.socket = null;
+      if (event.code === 4401 || event.code === 4403) {
+        const canRetry = await this.handleAuthFailure(options);
+        if (!canRetry) {
+          this.shouldReconnect = false;
+          return;
+        }
+        this.reconnectAttempt = 0;
+        this.scheduleReconnect(0);
+        return;
+      }
       this.scheduleReconnect();
     };
     this.socket.onerror = () => {
@@ -75,7 +86,7 @@ class RealtimeSocketService {
     };
   }
 
-  private scheduleReconnect() {
+  private scheduleReconnect(waitMsOverride?: number) {
     if (!this.shouldReconnect) {
       return;
     }
@@ -83,7 +94,7 @@ class RealtimeSocketService {
     if (!token) {
       return;
     }
-    const waitMs = Math.min(30000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5));
+    const waitMs = waitMsOverride ?? Math.min(30000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5));
     this.reconnectAttempt += 1;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -93,10 +104,21 @@ class RealtimeSocketService {
     }, waitMs);
   }
 
+  private async handleAuthFailure(options: ConnectOptions): Promise<boolean> {
+    if (!options.onAuthFailure) {
+      return false;
+    }
+    try {
+      return Boolean(await options.onAuthFailure());
+    } catch {
+      return false;
+    }
+  }
+
   private buildSocketUrl(token: string) {
     const apiUrl = new URL(API_BASE_URL);
     const wsProtocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = new URL(`${wsProtocol}//${apiUrl.host}/ws/notifications`);
+    const wsUrl = new URL(`${wsProtocol}//${apiUrl.host}/ws/notifications/`);
     wsUrl.searchParams.set("token", token);
     return wsUrl.toString();
   }

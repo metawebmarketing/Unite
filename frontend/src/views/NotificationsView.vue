@@ -23,7 +23,7 @@ onMounted(async () => {
 <template>
   <main class="post-detail-page notifications-page">
     <button class="back-button icon-only-button" type="button" @click="goBack" title="Back" aria-label="Back">
-      <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 16 16" class="icon"><path d="M5 1H4L0 5L4 9H5V6H11C12.6569 6 14 7.34315 14 9C14 10.6569 12.6569 12 11 12H4V14H11C13.7614 14 16 11.7614 16 9C16 6.23858 13.7614 4 11 4H5V1Z" fill="currentColor"/></svg>
     </button>
     <h1 class="feed-title">Notifications</h1>
     <section v-if="!items.length" class="feed-item">

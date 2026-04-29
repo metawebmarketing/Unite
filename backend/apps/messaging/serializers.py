@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -7,6 +8,19 @@ from rest_framework import serializers
 from apps.posts.services import validate_media_url
 
 User = get_user_model()
+URL_CANDIDATE_REGEX = re.compile(r"(https?://[^\s<>\"']+)", re.IGNORECASE)
+
+
+def normalize_first_http_url(value: str) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+    for match in URL_CANDIDATE_REGEX.findall(raw_value):
+        candidate = str(match).rstrip("),.;!?")
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return candidate
+    return ""
 
 
 class DMThreadCreateSerializer(serializers.Serializer):
@@ -38,12 +52,15 @@ class DMMessageCreateSerializer(serializers.Serializer):
         return value
 
     def validate_link_url(self, value: str) -> str:
-        if not value:
-            return value
-        parsed = urlparse(value)
+        normalized = normalize_first_http_url(value)
+        if not value and not normalized:
+            return ""
+        if not normalized:
+            raise serializers.ValidationError("Link URL must be a valid http/https URL.")
+        parsed = urlparse(normalized)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise serializers.ValidationError("Link URL must be a valid http/https URL.")
-        return value
+        return normalized
 
     def validate_attachments(self, value: list[dict]) -> list[dict]:
         normalized: list[dict] = []

@@ -6,7 +6,13 @@ export interface Profile {
   display_name: string;
   bio: string;
   location: string;
+  profile_link_url: string;
   interests: string[];
+  receive_notifications: boolean;
+  receive_email_notifications: boolean;
+  receive_push_notifications: boolean;
+  is_private_profile: boolean;
+  require_connection_approval: boolean;
   connection_count: number;
   is_ai_account: boolean;
   ai_badge_enabled: boolean;
@@ -20,6 +26,9 @@ export interface Profile {
 }
 
 export interface PublicProfile extends Profile {
+  is_limited_view?: boolean;
+  can_view_feed?: boolean;
+  is_blocked_view?: boolean;
 }
 
 export async function fetchProfile(): Promise<Profile> {

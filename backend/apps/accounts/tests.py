@@ -16,6 +16,7 @@ from apps.accounts.models import Profile, ProfileActionScore
 from apps.accounts.ranking import record_profile_action_score
 from apps.accounts.tasks import generate_algorithm_profile, refresh_active_profile_scores
 from apps.ai_accounts.models import AiAccountProfile
+from apps.connections.models import Connection
 from apps.feed.sentiment_providers import get_sentiment_provider, score_sentiment_text
 from apps.posts.models import Post
 from apps.posts.models import PostInteraction
@@ -60,11 +61,64 @@ class AccountsApiTests(APITestCase):
 
         patch_response = self.client.patch(
             "/api/v1/profile/",
-            {"bio": "Constructive conversation only.", "interests": ["tech", "design"]},
+            {
+                "bio": "Constructive conversation only.",
+                "interests": ["tech", "design"],
+                "profile_link_url": "https://example.com/profile",
+            },
             format="json",
         )
         self.assertEqual(patch_response.status_code, 200)
         self.assertEqual(patch_response.data["bio"], "Constructive conversation only.")
+        self.assertEqual(patch_response.data["profile_link_url"], "https://example.com/profile")
+
+    def test_profile_settings_defaults_and_notification_dependency(self):
+        user = User.objects.create_user(
+            username="settings_user",
+            email="settings@example.com",
+            password="Password123!",
+        )
+        Profile.objects.create(user=user, display_name="Settings User")
+        self.client.force_authenticate(user=user)
+        get_response = self.client.get("/api/v1/profile/")
+        self.assertEqual(get_response.status_code, 200)
+        self.assertTrue(get_response.data["receive_notifications"])
+        self.assertTrue(get_response.data["receive_email_notifications"])
+        self.assertTrue(get_response.data["receive_push_notifications"])
+        self.assertFalse(get_response.data["is_private_profile"])
+        self.assertFalse(get_response.data["require_connection_approval"])
+
+        patch_response = self.client.patch(
+            "/api/v1/profile/",
+            {
+                "receive_notifications": False,
+                "receive_email_notifications": True,
+                "receive_push_notifications": True,
+            },
+            format="json",
+        )
+        self.assertEqual(patch_response.status_code, 200)
+        self.assertFalse(patch_response.data["receive_notifications"])
+        self.assertFalse(patch_response.data["receive_email_notifications"])
+        self.assertFalse(patch_response.data["receive_push_notifications"])
+
+    def test_profile_link_url_keeps_first_valid_url_when_multiple_provided(self):
+        user = User.objects.create_user(
+            username="profile_link_user",
+            email="profile-link@example.com",
+            password="Password123!",
+        )
+        Profile.objects.create(user=user, display_name="Profile Link User")
+        self.client.force_authenticate(user=user)
+        response = self.client.patch(
+            "/api/v1/profile/",
+            {
+                "profile_link_url": "https://first.example.com/path and https://second.example.com/other",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["profile_link_url"], "https://first.example.com/path")
 
     def test_onboarding_interests_requires_five(self):
         user = User.objects.create_user(
@@ -169,6 +223,52 @@ class AccountsApiTests(APITestCase):
         response = self.client.get("/api/v1/profile/")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["is_staff"])
+
+    def test_public_profile_is_redacted_for_private_non_connection_or_blocked(self):
+        owner = User.objects.create_user(
+            username="private_owner",
+            email="private-owner@example.com",
+            password="Password123!",
+        )
+        viewer = User.objects.create_user(
+            username="private_viewer",
+            email="private-viewer@example.com",
+            password="Password123!",
+        )
+        Profile.objects.create(
+            user=owner,
+            display_name="Private Owner",
+            bio="Visible bio",
+            location="US",
+            profile_link_url="https://owner.example.com",
+            interests=["music"],
+            is_private_profile=True,
+        )
+        Profile.objects.create(user=viewer, display_name="Private Viewer")
+        self.client.force_authenticate(user=viewer)
+        hidden_response = self.client.get(f"/api/v1/profile/users/{owner.id}")
+        self.assertEqual(hidden_response.status_code, 200)
+        self.assertTrue(hidden_response.data["is_limited_view"])
+        self.assertFalse(hidden_response.data["can_view_feed"])
+        self.assertNotIn("interests", hidden_response.data)
+        self.assertEqual(hidden_response.data.get("profile_link_url"), "https://owner.example.com")
+
+        Connection.objects.create(requester=viewer, recipient=owner, status=Connection.Status.ACCEPTED)
+        visible_response = self.client.get(f"/api/v1/profile/users/{owner.id}")
+        self.assertEqual(visible_response.status_code, 200)
+        self.assertFalse(visible_response.data["is_limited_view"])
+        self.assertTrue(visible_response.data["can_view_feed"])
+        self.assertIn("interests", visible_response.data)
+
+        Connection.objects.update_or_create(
+            requester=owner,
+            recipient=viewer,
+            defaults={"status": Connection.Status.BLOCKED},
+        )
+        blocked_response = self.client.get(f"/api/v1/profile/users/{owner.id}")
+        self.assertEqual(blocked_response.status_code, 200)
+        self.assertTrue(blocked_response.data["is_limited_view"])
+        self.assertTrue(blocked_response.data["is_blocked_view"])
 
     def test_profile_image_upload_optimizes_to_square(self):
         user = User.objects.create_user(

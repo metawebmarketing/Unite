@@ -15,8 +15,14 @@ class Profile(models.Model):
     display_name = models.CharField(max_length=150, blank=True)
     bio = models.CharField(max_length=280, blank=True)
     location = models.CharField(max_length=120, blank=True)
+    profile_link_url = models.URLField(blank=True, default="")
     profile_image = models.ImageField(upload_to="profiles/", blank=True, null=True)
     interests = models.JSONField(default=list, blank=True)
+    receive_notifications = models.BooleanField(default=True)
+    receive_email_notifications = models.BooleanField(default=True)
+    receive_push_notifications = models.BooleanField(default=True)
+    is_private_profile = models.BooleanField(default=False)
+    require_connection_approval = models.BooleanField(default=False)
     algorithm_profile_status = models.CharField(
         max_length=32,
         choices=AlgorithmProfileStatus.choices,

@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import { createPost, uploadPostImage } from "../api/posts";
 import { enqueueCreatePost } from "../offline/action-queue";
 import { useErrorModalStore } from "../stores/error-modal";
+import { extractFirstHttpUrl } from "../utils/link-input";
 
 const MentionComposerInput = defineAsyncComponent(async () => {
   const componentModule = await import("../components/MentionComposerInput.vue");
@@ -114,7 +115,7 @@ async function onSubmit() {
   try {
     const payload = {
       content: form.content,
-      link_url: form.link_url || undefined,
+      link_url: extractFirstHttpUrl(form.link_url) || undefined,
       interest_tags: form.interest_tags
         .split(",")
         .map((item) => item.trim())
@@ -171,7 +172,7 @@ export default {
 <template>
   <div class="modal-overlay" @click.self="onCancel">
     <section class="auth-card modal-card mention-host-card">
-      <h1>Compose Post</h1>
+      <h1>Start Conversation</h1>
       <form @submit.prevent="onSubmit" class="stack">
         <MentionComposerInput
           v-model="form.content"
@@ -188,11 +189,7 @@ export default {
             aria-label="Add image"
             @click="openImagePicker"
           >
-            <svg viewBox="0 0 24 24" class="icon">
-              <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
-              <circle cx="9" cy="10" r="1.8" fill="none" stroke="currentColor" stroke-width="1.8" />
-              <path d="m5 17 4.5-4.5L13 16l2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
+            <svg viewBox="0 0 24 24" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M23 4C23 2.34315 21.6569 1 20 1H4C2.34315 1 1 2.34315 1 4V20C1 21.6569 2.34315 23 4 23H20C21.6569 23 23 21.6569 23 20V4ZM21 4C21 3.44772 20.5523 3 20 3H4C3.44772 3 3 3.44772 3 4V20C3 20.5523 3.44772 21 4 21H20C20.5523 21 21 20.5523 21 20V4Z" fill="currentColor"/><path d="M4.80665 17.5211L9.1221 9.60947C9.50112 8.91461 10.4989 8.91461 10.8779 9.60947L14.0465 15.4186L15.1318 13.5194C15.5157 12.8476 16.4843 12.8476 16.8682 13.5194L19.1451 17.5039C19.526 18.1705 19.0446 19 18.2768 19H5.68454C4.92548 19 4.44317 18.1875 4.80665 17.5211Z" fill="currentColor"/><path d="M18 8C18 9.10457 17.1046 10 16 10C14.8954 10 14 9.10457 14 8C14 6.89543 14.8954 6 16 6C17.1046 6 18 6.89543 18 8Z" fill="currentColor"/></svg>
           </button>
           <input
             ref="attachmentInputRef"
@@ -213,7 +210,7 @@ export default {
         <input v-model="form.interest_tags" placeholder="Interest tags (comma separated)" />
         <div class="modal-actions">
           <button type="button" @click="onCancel">Cancel</button>
-          <button type="submit" :disabled="isSaving">{{ isSaving ? "Posting..." : "Post" }}</button>
+          <button type="submit" :disabled="isSaving">{{ isSaving ? "Publishing..." : "Publish Conversation" }}</button>
         </div>
         <div v-if="isSaving" class="progress-track"><div class="progress-fill progress-indeterminate" /></div>
       </form>

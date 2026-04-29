@@ -9,6 +9,7 @@ import { fetchInstallStatus } from "./api/install";
 import router from "./router";
 import { useAuthStore } from "./stores/auth";
 import { useErrorModalStore } from "./stores/error-modal";
+import { useRouteLoadingStore } from "./stores/route-loading";
 import { loadThemeOnStartup } from "./theme";
 import "./style.css";
 
@@ -20,7 +21,11 @@ app.component("GlobalErrorModal", GlobalErrorModal);
 app.use(pinia);
 const authStore = useAuthStore(pinia);
 const errorModalStore = useErrorModalStore(pinia);
+const routeLoadingStore = useRouteLoadingStore(pinia);
 authStore.hydrateFromStorage();
+if (authStore.refreshToken) {
+  void authStore.refreshAccessToken().catch(() => null);
+}
 let installKnown: boolean | null = null;
 const cachedInstallState = sessionStorage.getItem("unite_install_known");
 if (cachedInstallState === "true") {
@@ -102,6 +107,7 @@ apiClient.interceptors.response.use(
           redirectingUnauthorized = false;
         }
       }
+      return Promise.reject(error);
     }
 
     const responseData = error?.response?.data;
@@ -126,6 +132,7 @@ apiClient.interceptors.response.use(
 );
 
 router.beforeEach(async (to) => {
+  routeLoadingStore.startNavigation();
   const publicNames = new Set(["login", "signup", "forgot-password", "reset-password", "install"]);
   if (installKnown === null) {
     try {
@@ -161,6 +168,14 @@ router.beforeEach(async (to) => {
     return { name: "feed" };
   }
   return true;
+});
+
+router.afterEach(() => {
+  routeLoadingStore.finishNavigation();
+});
+
+router.onError(() => {
+  routeLoadingStore.resetNavigation();
 });
 
 app.use(router).mount("#app");

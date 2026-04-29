@@ -33,6 +33,6 @@ class ActiveThemeView(APIView):
     def get(self, request):
         theme = ThemeConfig.objects.filter(is_active=True).order_by("-updated_at").first()
         if not theme:
-            return Response({"detail": "No active theme configured."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(None, status=status.HTTP_200_OK)
         serializer = ThemeConfigSerializer(theme)
         return Response(serializer.data)

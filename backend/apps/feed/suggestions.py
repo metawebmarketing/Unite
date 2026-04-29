@@ -32,8 +32,15 @@ def build_suggestion_candidates(*, user, limit: int = 40) -> list[dict]:
         Q(requester=user, status=Connection.Status.ACCEPTED)
         | Q(recipient=user, status=Connection.Status.ACCEPTED)
     ).values_list("requester_id", "recipient_id")
+    blocked_pairs = Connection.objects.filter(
+        Q(requester=user, status=Connection.Status.BLOCKED)
+        | Q(recipient=user, status=Connection.Status.BLOCKED)
+    ).values_list("requester_id", "recipient_id")
     excluded_user_ids = {user.id}
     for requester_id, recipient_id in connected_pairs:
+        excluded_user_ids.add(int(requester_id))
+        excluded_user_ids.add(int(recipient_id))
+    for requester_id, recipient_id in blocked_pairs:
         excluded_user_ids.add(int(requester_id))
         excluded_user_ids.add(int(recipient_id))
     suppressed_categories = [
@@ -53,6 +60,9 @@ def build_suggestion_candidates(*, user, limit: int = 40) -> list[dict]:
         excluded_user_ids.update(
             Profile.objects.filter(id__in=flagged_profile_ids).values_list("user_id", flat=True)
         )
+    excluded_user_ids.update(
+        Profile.objects.filter(is_private_profile=True).exclude(user_id=user.id).values_list("user_id", flat=True)
+    )
 
     profiles = (
         Profile.objects.select_related("user")

@@ -523,8 +523,8 @@ class DMThreadMessageListCreateView(APIView):
             recipient_user_id=recipient_user_id,
             actor_user_id=request.user.id,
             event_type="dm.message",
-            title="New direct message",
-            message=f"@{request.user.username} sent you a message.",
+            title="New private conversation",
+            message=f"@{request.user.username} started a private conversation with you.",
             payload={
                 "thread_id": int(thread.id),
                 "message_id": int(message.id),

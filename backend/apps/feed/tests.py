@@ -456,3 +456,44 @@ class FeedApiTests(APITestCase):
         suggestions = [item for item in response.data["items"] if item["item_type"] == "suggestion"]
         self.assertTrue(suggestions)
         self.assertNotEqual(suggestions[0]["data"].get("display_name"), "FlaggedCandidate")
+
+    def test_feed_excludes_blocked_authors(self):
+        viewer = User.objects.create_user(username="blocked_viewer", password="Password123!")
+        blocked_author = User.objects.create_user(username="blocked_author", password="Password123!")
+        Profile.objects.create(user=viewer, display_name="Blocked Viewer")
+        Profile.objects.create(user=blocked_author, display_name="Blocked Author")
+        Post.objects.create(author=blocked_author, content="should be hidden")
+        Connection.objects.create(
+            requester=viewer,
+            recipient=blocked_author,
+            status=Connection.Status.BLOCKED,
+        )
+        self.client.force_authenticate(user=viewer)
+        response = self.client.get("/api/v1/feed/?mode=both&page_size=5")
+        self.assertEqual(response.status_code, 200)
+        post_items = [item for item in response.data["items"] if item["item_type"] == "post"]
+        self.assertEqual(len(post_items), 0)
+
+    def test_feed_excludes_private_profiles_until_connected(self):
+        viewer = User.objects.create_user(username="private_viewer", password="Password123!")
+        private_author = User.objects.create_user(username="private_author", password="Password123!")
+        Profile.objects.create(user=viewer, display_name="Private Viewer")
+        Profile.objects.create(user=private_author, display_name="Private Author", is_private_profile=True)
+        Post.objects.create(author=private_author, content="private content")
+        self.client.force_authenticate(user=viewer)
+
+        hidden_response = self.client.get("/api/v1/feed/?mode=both&page_size=5")
+        self.assertEqual(hidden_response.status_code, 200)
+        hidden_posts = [item for item in hidden_response.data["items"] if item["item_type"] == "post"]
+        self.assertEqual(len(hidden_posts), 0)
+
+        Connection.objects.create(
+            requester=viewer,
+            recipient=private_author,
+            status=Connection.Status.ACCEPTED,
+        )
+        cache.clear()
+        visible_response = self.client.get("/api/v1/feed/?mode=both&page_size=5")
+        self.assertEqual(visible_response.status_code, 200)
+        visible_posts = [item for item in visible_response.data["items"] if item["item_type"] == "post"]
+        self.assertEqual(len(visible_posts), 1)

@@ -9,7 +9,7 @@ User = get_user_model()
 class ConnectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Connection
-        fields = ["id", "requester_id", "recipient_id", "status", "created_at"]
+        fields = ["id", "requester_id", "recipient_id", "status", "created_at", "updated_at"]
         read_only_fields = fields
 
 

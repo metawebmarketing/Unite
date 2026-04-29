@@ -12,8 +12,8 @@ export interface ActiveTheme {
 
 export async function fetchActiveTheme(): Promise<ActiveTheme | null> {
   try {
-    const response = await axios.get<ActiveTheme>(`${API_BASE_URL}/themes/active`);
-    return response.data;
+    const response = await axios.get<ActiveTheme | null>(`${API_BASE_URL}/themes/active`);
+    return response.data || null;
   } catch {
     return null;
   }

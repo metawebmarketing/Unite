@@ -84,6 +84,13 @@ export const useFeedStore = defineStore("feed", {
       this.blockedAuthorIds = [...this.blockedAuthorIds, authorId];
       this.persistBlockedUsers();
     },
+    unblockAuthor(authorId: number) {
+      if (!Number.isInteger(authorId) || authorId <= 0) {
+        return;
+      }
+      this.blockedAuthorIds = this.blockedAuthorIds.filter((item) => item !== authorId);
+      this.persistBlockedUsers();
+    },
     isAuthorBlocked(authorId: number): boolean {
       return this.blockedAuthorIds.includes(authorId);
     },

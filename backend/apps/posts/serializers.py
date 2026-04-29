@@ -1,9 +1,24 @@
+import re
 from urllib.parse import urlparse
 
 from rest_framework import serializers
 
 from apps.posts.models import MediaAttachment, Post
 from apps.posts.services import build_link_preview, validate_media_url
+
+URL_CANDIDATE_REGEX = re.compile(r"(https?://[^\s<>\"']+)", re.IGNORECASE)
+
+
+def normalize_first_http_url(value: str) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+    for match in URL_CANDIDATE_REGEX.findall(raw_value):
+        candidate = str(match).rstrip("),.;!?")
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return candidate
+    return ""
 
 
 class MediaAttachmentSerializer(serializers.ModelSerializer):
@@ -13,6 +28,7 @@ class MediaAttachmentSerializer(serializers.ModelSerializer):
 
 
 class PostSerializer(serializers.ModelSerializer):
+    link_url = serializers.CharField(required=False, allow_blank=True, max_length=2000)
     attachments = MediaAttachmentSerializer(many=True, required=False)
     interaction_counts = serializers.DictField(read_only=True)
     has_liked = serializers.BooleanField(read_only=True)
@@ -49,12 +65,15 @@ class PostSerializer(serializers.ModelSerializer):
         ]
 
     def validate_link_url(self, value):
-        if not value:
-            return value
-        parsed = urlparse(value)
+        normalized = normalize_first_http_url(value)
+        if not value and not normalized:
+            return ""
+        if not normalized:
+            raise serializers.ValidationError("Link URL must be a valid http/https URL.")
+        parsed = urlparse(normalized)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise serializers.ValidationError("Link URL must be a valid http/https URL.")
-        return value
+        return normalized
 
     def validate_attachments(self, value):
         if len(value) > 1:
@@ -92,12 +111,15 @@ class ReactSerializer(serializers.Serializer):
     )
 
     def validate_link_url(self, value: str) -> str:
-        if not value:
-            return value
-        parsed = urlparse(value)
+        normalized = normalize_first_http_url(value)
+        if not value and not normalized:
+            return ""
+        if not normalized:
+            raise serializers.ValidationError("Link URL must be a valid http/https URL.")
+        parsed = urlparse(normalized)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise serializers.ValidationError("Link URL must be a valid http/https URL.")
-        return value
+        return normalized
 
     def validate_attachments(self, value):
         if len(value) > 1:

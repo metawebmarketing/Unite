@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import { sendAdEvent } from "../api/ads";
@@ -19,7 +19,7 @@ import {
   type PostRecord,
   type SyncMetrics,
 } from "../api/posts";
-import { connectToUser, disconnectFromUser, fetchConnectionStatus } from "../api/connections";
+import { blockUser, connectToUser, disconnectFromUser, fetchConnectionStatus, unblockUser } from "../api/connections";
 import { reactToPost } from "../api/posts";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
 import { useAuthStore } from "../stores/auth";
@@ -29,9 +29,14 @@ import { useNotificationsStore } from "../stores/notifications";
 import { clearAllFeedCaches } from "../offline/feed-cache";
 import MentionComposerInput from "../components/MentionComposerInput.vue";
 import MentionTextContent from "../components/MentionTextContent.vue";
+import { extractFirstHttpUrl } from "../utils/link-input";
 import ComposeView from "./ComposeView.vue";
-import ProfileView from "./ProfileView.vue";
 import ThemeStudioView from "./ThemeStudioView.vue";
+
+const InAppBrowserModal = defineAsyncComponent(async () => {
+  const componentModule = await import("../components/InAppBrowserModal.vue");
+  return (componentModule as { default?: unknown }).default || componentModule;
+});
 
 const feedStore = useFeedStore();
 const authStore = useAuthStore();
@@ -39,7 +44,7 @@ const notificationsStore = useNotificationsStore();
 const errorModalStore = useErrorModalStore();
 const route = useRoute();
 const router = useRouter();
-const activeModal = ref<"compose" | "profile" | "theme-studio" | null>(null);
+const activeModal = ref<"compose" | "theme-studio" | null>(null);
 const loadMoreAnchor = ref<HTMLElement | null>(null);
 let observer: IntersectionObserver | null = null;
 const topInterests = ref<TopInterest[]>([]);
@@ -67,6 +72,7 @@ const expandedSuggestionUserIds = ref<number[]>([]);
 const suggestionPreviewPosts = ref<Record<number, PostRecord[]>>({});
 const pendingConnectionUserIds = ref<number[]>([]);
 const connectionStatusByUserId = ref<Record<number, boolean>>({});
+const relationshipStatusByUserId = ref<Record<number, string>>({});
 const showReplyModal = ref(false);
 const showShareModal = ref(false);
 const replyDraft = ref("");
@@ -86,6 +92,8 @@ const shareTaggedUserIds = ref<number[]>([]);
 const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
+const showInAppBrowser = ref(false);
+const inAppBrowserUrl = ref("");
 const feedOrdering = ref<"default" | "date_cluster">("default");
 const notificationUnreadCount = computed(() => Math.max(0, Number(notificationsStore.unreadCount || 0)));
 
@@ -315,6 +323,15 @@ function hasLinkPreviewContent(linkPreview: unknown): boolean {
   return Boolean(preview.title || preview.description || preview.host || preview.url);
 }
 
+function openInAppBrowser(rawUrl: unknown) {
+  const normalizedUrl = extractFirstHttpUrl(String(rawUrl || ""));
+  if (!normalizedUrl) {
+    return;
+  }
+  inAppBrowserUrl.value = normalizedUrl;
+  showInAppBrowser.value = true;
+}
+
 function getPostAttachments(value: unknown): Array<{ media_type: "image"; media_url: string }> {
   if (!Array.isArray(value)) {
     return [];
@@ -474,11 +491,6 @@ function openPost(postId: number) {
   void router.push({ name: "post-detail", params: { postId } });
 }
 
-function blockAuthor(authorId: number) {
-  feedStore.blockAuthor(authorId);
-  closePostMenu();
-}
-
 async function onReply(postId: number) {
   replyTargetPostId.value = postId;
   resetReplyComposerState();
@@ -507,7 +519,7 @@ async function submitReplyModal() {
   }
   await feedStore.replyToPost(postId, {
     content: draft,
-    link_url: replyLinkDraft.value.trim() || undefined,
+    link_url: extractFirstHttpUrl(replyLinkDraft.value) || undefined,
     attachments: replyAttachments.value.length ? replyAttachments.value : undefined,
     tagged_user_ids: replyTaggedUserIds.value,
   });
@@ -525,7 +537,7 @@ async function submitShareModal() {
   }
   const payload = {
     content: shareDraft.value.trim(),
-    link_url: shareLinkDraft.value.trim() || undefined,
+    link_url: extractFirstHttpUrl(shareLinkDraft.value) || undefined,
     attachments: shareAttachments.value.length ? shareAttachments.value : undefined,
     tagged_user_ids: shareTaggedUserIds.value,
   };
@@ -571,6 +583,10 @@ function isConnectedWithUser(userId: number): boolean {
   return Boolean(connectionStatusByUserId.value[userId]);
 }
 
+function isBlockedWithUser(userId: number): boolean {
+  return relationshipStatusByUserId.value[userId] === "blocked";
+}
+
 function resolveConnectedState(userId: number, fallback: unknown = false): boolean {
   if (Object.prototype.hasOwnProperty.call(connectionStatusByUserId.value, userId)) {
     return Boolean(connectionStatusByUserId.value[userId]);
@@ -610,10 +626,18 @@ async function ensureConnectionStatus(userId: number) {
       ...connectionStatusByUserId.value,
       [userId]: Boolean(status.is_connected),
     };
+    relationshipStatusByUserId.value = {
+      ...relationshipStatusByUserId.value,
+      [userId]: String(status.relationship_status || "none"),
+    };
   } catch {
     connectionStatusByUserId.value = {
       ...connectionStatusByUserId.value,
       [userId]: false,
+    };
+    relationshipStatusByUserId.value = {
+      ...relationshipStatusByUserId.value,
+      [userId]: "none",
     };
   }
 }
@@ -626,13 +650,46 @@ async function onConnect(userId: number, event?: MouseEvent) {
   pendingConnectionUserIds.value = [...pendingConnectionUserIds.value, userId];
   try {
     await ensureConnectionStatus(userId);
+    if (isBlockedWithUser(userId)) {
+      return;
+    }
     const isConnected = isConnectedWithUser(userId);
-    if (isConnected) {
+    const relationshipStatus = String(relationshipStatusByUserId.value[userId] || "none");
+    if (isConnected || relationshipStatus === "pending_outgoing") {
       await disconnectFromUser(userId);
       setConnectedStateForUser(userId, false);
+      relationshipStatusByUserId.value = { ...relationshipStatusByUserId.value, [userId]: "none" };
     } else {
-      await connectToUser(userId);
-      setConnectedStateForUser(userId, true);
+      const result = await connectToUser(userId);
+      const nextStatus = result.status === "pending" ? "pending_outgoing" : "connected";
+      relationshipStatusByUserId.value = { ...relationshipStatusByUserId.value, [userId]: nextStatus };
+      setConnectedStateForUser(userId, result.status === "accepted");
+    }
+  } catch {
+    // Keep UI stable on transient failures.
+  } finally {
+    pendingConnectionUserIds.value = pendingConnectionUserIds.value.filter((value) => value !== userId);
+    closePostMenu();
+  }
+}
+
+async function onToggleBlock(userId: number, event?: MouseEvent) {
+  event?.stopPropagation();
+  if (!Number.isInteger(userId) || userId <= 0 || isConnectedPending(userId)) {
+    return;
+  }
+  pendingConnectionUserIds.value = [...pendingConnectionUserIds.value, userId];
+  try {
+    await ensureConnectionStatus(userId);
+    if (isBlockedWithUser(userId)) {
+      await unblockUser(userId);
+      relationshipStatusByUserId.value = { ...relationshipStatusByUserId.value, [userId]: "none" };
+      feedStore.unblockAuthor(userId);
+    } else {
+      await blockUser(userId);
+      relationshipStatusByUserId.value = { ...relationshipStatusByUserId.value, [userId]: "blocked" };
+      setConnectedStateForUser(userId, false);
+      feedStore.blockAuthor(userId);
     }
   } catch {
     // Keep UI stable on transient failures.
@@ -743,7 +800,7 @@ function onFeedItemClick(
 
 function applyRouteModalState() {
   const modal = String(route.query.modal || "");
-  if (modal === "compose" || modal === "profile" || modal === "theme-studio") {
+  if (modal === "compose" || modal === "theme-studio") {
     activeModal.value = modal;
   }
 }
@@ -811,7 +868,7 @@ async function resetAndRegenerateDemo() {
       seed_total_posts: normalizedTotalPosts,
     });
     installSeedStatus.value = result.seed_status;
-    demoActionStatus.value = `Removed ${result.removed_users} demo users and ${result.removed_posts} posts. Regeneration queued.`;
+    demoActionStatus.value = `Removed ${result.removed_users} demo users and ${result.removed_posts} conversations. Regeneration queued.`;
     try {
       demoProgressStatus.value = await fetchInstallStatus();
     } catch {
@@ -959,9 +1016,12 @@ function onLogout() {
 <template>
   <div class="layout">
     <aside class="left-nav">
-      <RouterLink to="/" class="nav-icon-link" title="Home" aria-label="Home">
+      <RouterLink to="/" class="nav-logo-link" title="Home" aria-label="Go to home">
+        <img src="/src/images/logo.png" alt="Unite logo" class="nav-logo-image" />
+      </RouterLink>
+      <RouterLink to="/" class="nav-icon-link" title="Conversations" aria-label="Conversations">
         <svg viewBox="0 0 24 24" class="icon"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span class="nav-link-label">Home</span>
+        <span class="nav-link-label">Conversations</span>
       </RouterLink>
       <RouterLink to="/search" class="nav-icon-link" title="Search" aria-label="Search">
         <svg viewBox="0 0 24 24" class="icon"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -971,9 +1031,9 @@ function onLogout() {
         <svg viewBox="0 0 24 24" class="icon"><path d="M7.5 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3Zm9 0a3 3 0 1 0-3-3 3 3 0 0 0 3 3ZM2.5 20a5 5 0 0 1 10 0M11.5 20a5 5 0 0 1 10 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="nav-link-label">Connections</span>
       </RouterLink>
-      <RouterLink to="/messages" class="nav-icon-link" title="Messages" aria-label="Messages">
-        <svg viewBox="0 0 24 24" class="icon"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H7l-4 3V12a8.5 8.5 0 1 1 18 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span class="nav-link-label">Messages</span>
+      <RouterLink to="/messages" class="nav-icon-link" title="Private Conversations" aria-label="Private Conversations">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 13.5997 2.37562 15.1116 3.04346 16.4525C3.22094 16.8088 3.28001 17.2161 3.17712 17.6006L2.58151 19.8267C2.32295 20.793 3.20701 21.677 4.17335 21.4185L6.39939 20.8229C6.78393 20.72 7.19121 20.7791 7.54753 20.9565C8.88837 21.6244 10.4003 22 12 22Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        <span class="nav-link-label">Private Conversations</span>
       </RouterLink>
       <RouterLink to="/notifications" class="nav-icon-link" title="Notifications" aria-label="Notifications">
         <svg viewBox="0 0 24 24" class="icon"><path d="M12 4a5 5 0 0 0-5 5v2.8l-1.8 2.5a1 1 0 0 0 .8 1.7h12a1 1 0 0 0 .8-1.7L17 11.8V9a5 5 0 0 0-5-5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 18a2.5 2.5 0 0 0 5 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -984,20 +1044,20 @@ function onLogout() {
         <svg viewBox="0 0 24 24" class="icon"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5a2.1 2.1 0 0 0-3 0L4 15.5V20Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="nav-link-label">Compose</span>
       </RouterLink>
-      <RouterLink :to="{ name: 'feed', query: { modal: 'profile' } }" class="nav-icon-link" title="Profile" aria-label="Profile">
+      <RouterLink to="/profile" class="nav-icon-link" title="Profile" aria-label="Profile">
         <svg viewBox="0 0 24 24" class="icon"><path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-4 0-7 2.2-7 5v1h14v-1c0-2.8-3-5-7-5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="nav-link-label">Profile</span>
       </RouterLink>
       <RouterLink :to="{ name: 'feed', query: { modal: 'theme-studio' } }" class="nav-icon-link" title="Theme Studio" aria-label="Theme Studio">
-        <svg viewBox="0 0 24 24" class="icon"><path d="M12 4a8 8 0 1 0 0 16h1.5a2.5 2.5 0 0 0 0-5H12a2 2 0 0 1 0-4h7a7 7 0 0 0-7-7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg viewBox="0 0 50 50" class="icon"><path d="M21.211 6c-12.632 0-20.211 10.133-20.211 15.2s2.526 8.867 7.579 8.867 7.58 1.266 7.58 5.066c0 5.066 3.789 8.866 8.842 8.866 16.422 0 24-8.866 24-17.732-.001-15.2-12.635-20.267-27.79-20.267zm-3.158 5.067c1.744 0 3.158 1.418 3.158 3.166 0 1.75-1.414 3.167-3.158 3.167s-3.158-1.418-3.158-3.167c0-1.748 1.414-3.166 3.158-3.166zm10.104 0c1.744 0 3.158 1.418 3.158 3.166 0 1.75-1.414 3.167-3.158 3.167-1.743 0-3.157-1.418-3.157-3.167 0-1.748 1.414-3.166 3.157-3.166zm10.106 5.066c1.745 0 3.159 1.417 3.159 3.167 0 1.75-1.414 3.166-3.159 3.166-1.744 0-3.157-1.417-3.157-3.166-.001-1.749 1.413-3.167 3.157-3.167zm-29.052 2.534c1.744 0 3.157 1.417 3.157 3.165 0 1.75-1.414 3.167-3.157 3.167s-3.158-1.418-3.158-3.167c0-1.748 1.414-3.165 3.158-3.165zm15.789 12.666c2.093 0 3.789 1.7 3.789 3.801 0 2.098-1.696 3.799-3.789 3.799s-3.789-1.701-3.789-3.799c0-2.101 1.696-3.801 3.789-3.801z" fill="currentColor"/></svg>
         <span class="nav-link-label">Theme</span>
       </RouterLink>
       <RouterLink to="/bookmarks" class="nav-icon-link" title="Bookmarks" aria-label="Bookmarks">
         <svg viewBox="0 0 24 24" class="icon"><path d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="nav-link-label">Bookmarks</span>
       </RouterLink>
-      <RouterLink to="/pinned" class="nav-icon-link" title="Pinned posts" aria-label="Pinned posts">
-        <svg viewBox="0 0 24 24" class="icon"><path d="m8 3 8 8-2 2v6l-2-2-2 2v-6l-2-2 0 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <RouterLink to="/pinned" class="nav-icon-link" title="Pinned conversations" aria-label="Pinned conversations">
+        <svg viewBox="0 0 24 24" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M17.1218 1.87023C15.7573 0.505682 13.4779 0.76575 12.4558 2.40261L9.61062 6.95916C9.61033 6.95965 9.60913 6.96167 9.6038 6.96549C9.59728 6.97016 9.58336 6.97822 9.56001 6.9848C9.50899 6.99916 9.44234 6.99805 9.38281 6.97599C8.41173 6.61599 6.74483 6.22052 5.01389 6.87251C4.08132 7.22378 3.61596 8.03222 3.56525 8.85243C3.51687 9.63502 3.83293 10.4395 4.41425 11.0208L7.94975 14.5563L1.26973 21.2363C0.879206 21.6269 0.879206 22.26 1.26973 22.6506C1.66025 23.0411 2.29342 23.0411 2.68394 22.6506L9.36397 15.9705L12.8995 19.5061C13.4808 20.0874 14.2853 20.4035 15.0679 20.3551C15.8881 20.3044 16.6966 19.839 17.0478 18.9065C17.6998 17.1755 17.3043 15.5086 16.9444 14.5375C16.9223 14.478 16.9212 14.4114 16.9355 14.3603C16.9421 14.337 16.9502 14.3231 16.9549 14.3165C16.9587 14.3112 16.9606 14.31 16.9611 14.3098L21.5177 11.4645C23.1546 10.4424 23.4147 8.16307 22.0501 6.79853L17.1218 1.87023ZM14.1523 3.46191C14.493 2.91629 15.2528 2.8296 15.7076 3.28445L20.6359 8.21274C21.0907 8.66759 21.0041 9.42737 20.4584 9.76806L15.9019 12.6133C14.9572 13.2032 14.7469 14.3637 15.0691 15.2327C15.3549 16.0037 15.5829 17.1217 15.1762 18.2015C15.1484 18.2752 15.1175 18.3018 15.0985 18.3149C15.0743 18.3316 15.0266 18.3538 14.9445 18.3589C14.767 18.3699 14.5135 18.2916 14.3137 18.0919L5.82846 9.6066C5.62872 9.40686 5.55046 9.15333 5.56144 8.97583C5.56651 8.8937 5.58877 8.84605 5.60548 8.82181C5.61855 8.80285 5.64516 8.7719 5.71886 8.74414C6.79869 8.33741 7.91661 8.56545 8.68762 8.85128C9.55668 9.17345 10.7171 8.96318 11.3071 8.01845L14.1523 3.46191Z" fill="currentColor"/></svg>
         <span class="nav-link-label">Pinned</span>
       </RouterLink>
       <RouterLink v-if="authStore.isStaff" to="/policy-lab" class="nav-icon-link" title="Policy Lab" aria-label="Policy Lab">
@@ -1027,7 +1087,7 @@ function onLogout() {
 
     <main class="feed">
       <header class="feed-header">
-        <h1 class="feed-title">Home</h1>
+        <h1 class="feed-title">Conversations</h1>
         <div class="tabs mode-tabs">
           <button
             type="button"
@@ -1149,23 +1209,29 @@ function onLogout() {
               Connected
             </span>
             <div class="post-menu-wrap">
-              <button type="button" class="post-menu-trigger" @click.stop="openPostMenu(Number(item.data.id || 0))" title="Post menu" aria-label="Post menu">
+              <button type="button" class="post-menu-trigger" @click.stop="openPostMenu(Number(item.data.id || 0))" title="Conversation menu" aria-label="Conversation menu">
                 <svg viewBox="0 0 24 24" class="icon"><circle cx="6" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="18" cy="12" r="1.8" fill="currentColor"/></svg>
               </button>
               <div v-if="activePostMenuId === Number(item.data.id || 0)" class="post-menu">
-                <button type="button" @click.stop="copyPostLink(Number(item.data.id || 0))">Copy post link</button>
+                <button type="button" @click.stop="copyPostLink(Number(item.data.id || 0))">Copy conversation link</button>
                 <button
                   v-if="!isOwnUsername(String(item.data.author_username || ''))"
                   type="button"
                   @click.stop="onConnect(Number(item.data.author_id || 0), $event)"
                 >
                   {{
-                    resolveConnectedState(Number(item.data.author_id || 0), item.data.author_is_connected)
-                      ? "Disconnect"
-                      : "Connect"
+                    relationshipStatusByUserId[Number(item.data.author_id || 0)] === "blocked"
+                      ? "Blocked"
+                      : resolveConnectedState(Number(item.data.author_id || 0), item.data.author_is_connected)
+                        ? "Disconnect"
+                        : relationshipStatusByUserId[Number(item.data.author_id || 0)] === "pending_outgoing"
+                          ? "Requested"
+                          : "Connect"
                   }}
                 </button>
-                <button type="button" @click.stop="blockAuthor(Number(item.data.author_id || 0))">Block user</button>
+                <button type="button" @click.stop="onToggleBlock(Number(item.data.author_id || 0), $event)">
+                  {{ relationshipStatusByUserId[Number(item.data.author_id || 0)] === "blocked" ? "Unblock" : "Block" }}
+                </button>
               </div>
             </div>
           </h3>
@@ -1180,26 +1246,30 @@ function onLogout() {
               :key="`${attachment.media_url}-${attachmentIndex}`"
               class="post-attachment-card"
             >
-              <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Post attachment" />
-              <img :src="attachment.media_url" alt="Post attachment" />
+              <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Conversation attachment" />
+              <img :src="attachment.media_url" alt="Conversation attachment" />
             </div>
           </div>
-          <div v-if="hasLinkPreviewContent(item.data.link_preview)" class="link-preview">
+          <div
+            v-if="hasLinkPreviewContent(item.data.link_preview)"
+            class="link-preview clickable-post-card"
+            @click.stop="openInAppBrowser(item.data.link_preview?.url)"
+          >
             <strong>{{ item.data.link_preview?.title }}</strong>
             <p>{{ item.data.link_preview?.description }}</p>
             <small>{{ item.data.link_preview?.host }}</small>
           </div>
           <div class="post-actions">
             <button class="icon-action-button" @click.stop="feedStore.toggleLike(Number(item.data.id))" title="Like" aria-label="Like">
-              <svg viewBox="0 0 24 24" class="icon"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg viewBox="0 0 24 24" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 6.00019C10.2006 3.90317 7.19377 3.2551 4.93923 5.17534C2.68468 7.09558 2.36727 10.3061 4.13778 12.5772C5.60984 14.4654 10.0648 18.4479 11.5249 19.7369C11.6882 19.8811 11.7699 19.9532 11.8652 19.9815C11.9483 20.0062 12.0393 20.0062 12.1225 19.9815C12.2178 19.9532 12.2994 19.8811 12.4628 19.7369C13.9229 18.4479 18.3778 14.4654 19.8499 12.5772C21.6204 10.3061 21.3417 7.07538 19.0484 5.17534C16.7551 3.2753 13.7994 3.90317 12 6.00019Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <span>{{ item.data.interaction_counts?.like ?? 0 }}</span>
             </button>
             <button class="icon-action-button" @click.stop="onReply(Number(item.data.id))" title="Reply" aria-label="Reply">
-              <svg viewBox="0 0 24 24" class="icon"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H7l-4 3V12a8.5 8.5 0 1 1 18 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg viewBox="0 0 24 24" class="icon"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 13.5997 2.37562 15.1116 3.04346 16.4525C3.22094 16.8088 3.28001 17.2161 3.17712 17.6006L2.58151 19.8267C2.32295 20.793 3.20701 21.677 4.17335 21.4185L6.39939 20.8229C6.78393 20.72 7.19121 20.7791 7.54753 20.9565C8.88837 21.6244 10.4003 22 12 22Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
               <span>{{ item.data.interaction_counts?.reply ?? 0 }}</span>
             </button>
-            <button class="icon-action-button" @click.stop="onRepost(Number(item.data.id))" title="Repost" aria-label="Repost">
-              <svg viewBox="0 0 24 24" class="icon"><path d="M7 7h11l-2.5-2.5M17 17H6l2.5 2.5M18 7v6M6 17v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <button class="icon-action-button" @click.stop="onRepost(Number(item.data.id))" title="Amplify" aria-label="Amplify">
+              <svg viewBox="0 0 24 24" class="icon"><path d="M4.06189 13C4.02104 12.6724 4 12.3387 4 12C4 7.58172 7.58172 4 12 4C14.5006 4 16.7332 5.14727 18.2002 6.94416M19.9381 11C19.979 11.3276 20 11.6613 20 12C20 16.4183 16.4183 20 12 20C9.61061 20 7.46589 18.9525 6 17.2916M9 17H6V17.2916M18.2002 4V6.94416M18.2002 6.94416V6.99993L15.2002 7M6 20V17.2916" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <span>{{ item.data.interaction_counts?.repost ?? 0 }}</span>
             </button>
             <button class="icon-action-button" @click.stop="onBookmark(Number(item.data.id))" title="Bookmark" aria-label="Bookmark">
@@ -1210,10 +1280,10 @@ function onLogout() {
               v-if="isOwnPost(item)"
               class="icon-action-button"
               @click.stop="onTogglePin(Number(item.data.id), item)"
-              title="Pin post"
-              aria-label="Pin post"
+              title="Pin conversation"
+              aria-label="Pin conversation"
             >
-              <svg viewBox="0 0 24 24" class="icon"><path d="m8 3 8 8-2 2v6l-2-2-2 2v-6l-2-2 0 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg viewBox="0 0 24 24" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M17.1218 1.87023C15.7573 0.505682 13.4779 0.76575 12.4558 2.40261L9.61062 6.95916C9.61033 6.95965 9.60913 6.96167 9.6038 6.96549C9.59728 6.97016 9.58336 6.97822 9.56001 6.9848C9.50899 6.99916 9.44234 6.99805 9.38281 6.97599C8.41173 6.61599 6.74483 6.22052 5.01389 6.87251C4.08132 7.22378 3.61596 8.03222 3.56525 8.85243C3.51687 9.63502 3.83293 10.4395 4.41425 11.0208L7.94975 14.5563L1.26973 21.2363C0.879206 21.6269 0.879206 22.26 1.26973 22.6506C1.66025 23.0411 2.29342 23.0411 2.68394 22.6506L9.36397 15.9705L12.8995 19.5061C13.4808 20.0874 14.2853 20.4035 15.0679 20.3551C15.8881 20.3044 16.6966 19.839 17.0478 18.9065C17.6998 17.1755 17.3043 15.5086 16.9444 14.5375C16.9223 14.478 16.9212 14.4114 16.9355 14.3603C16.9421 14.337 16.9502 14.3231 16.9549 14.3165C16.9587 14.3112 16.9606 14.31 16.9611 14.3098L21.5177 11.4645C23.1546 10.4424 23.4147 8.16307 22.0501 6.79853L17.1218 1.87023ZM14.1523 3.46191C14.493 2.91629 15.2528 2.8296 15.7076 3.28445L20.6359 8.21274C21.0907 8.66759 21.0041 9.42737 20.4584 9.76806L15.9019 12.6133C14.9572 13.2032 14.7469 14.3637 15.0691 15.2327C15.3549 16.0037 15.5829 17.1217 15.1762 18.2015C15.1484 18.2752 15.1175 18.3018 15.0985 18.3149C15.0743 18.3316 15.0266 18.3538 14.9445 18.3589C14.767 18.3699 14.5135 18.2916 14.3137 18.0919L5.82846 9.6066C5.62872 9.40686 5.55046 9.15333 5.56144 8.97583C5.56651 8.8937 5.58877 8.84605 5.60548 8.82181C5.61855 8.80285 5.64516 8.7719 5.71886 8.74414C6.79869 8.33741 7.91661 8.56545 8.68762 8.85128C9.55668 9.17345 10.7171 8.96318 11.3071 8.01845L14.1523 3.46191Z" fill="currentColor"/></svg>
               <span>{{ item.data.is_pinned ? 1 : 0 }}</span>
             </button>
             <span v-if="authStore.isStaff" class="rank-pill">Score: {{ item.data.rank_score ?? 0 }}</span>
@@ -1283,15 +1353,14 @@ function onLogout() {
             <button
               class="icon-action-button"
               @click.stop="toggleSuggestionPreview(Number(item.data.user_id || 0))"
-              title="Show latest posts"
-              aria-label="Show latest posts"
+              title="Show latest conversations"
+              aria-label="Show latest conversations"
             >
-              <svg viewBox="0 0 24 24" class="icon"><path d="M3 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
-              <span>{{ isSuggestionExpanded(Number(item.data.user_id || 0)) ? 1 : 0 }}</span>
+              <svg viewBox="0 0 16 16" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M0 8L3.07945 4.30466C4.29638 2.84434 6.09909 2 8 2C9.90091 2 11.7036 2.84434 12.9206 4.30466L16 8L12.9206 11.6953C11.7036 13.1557 9.90091 14 8 14C6.09909 14 4.29638 13.1557 3.07945 11.6953L0 8ZM8 11C9.65685 11 11 9.65685 11 8C11 6.34315 9.65685 5 8 5C6.34315 5 5 6.34315 5 8C5 9.65685 6.34315 11 8 11Z" fill="currentColor"/></svg>
             </button>
           </div>
           <div v-if="isSuggestionExpanded(Number(item.data.user_id || 0))" class="suggestion-post-preview">
-            <h4>Latest posts</h4>
+            <h4>Latest conversations</h4>
             <article
               v-for="post in suggestionPreviewPosts[Number(item.data.user_id || 0)] || []"
               :key="post.id"
@@ -1343,26 +1412,30 @@ function onLogout() {
                   :key="`${attachment.media_url}-${attachmentIndex}`"
                   class="post-attachment-card"
                 >
-                  <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Post attachment" />
-                  <img :src="attachment.media_url" alt="Post attachment" />
+                  <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Conversation attachment" />
+                  <img :src="attachment.media_url" alt="Conversation attachment" />
                 </div>
               </div>
-              <div v-if="hasLinkPreviewContent(post.link_preview)" class="link-preview">
+              <div
+                v-if="hasLinkPreviewContent(post.link_preview)"
+                class="link-preview clickable-post-card"
+                @click.stop="openInAppBrowser(post.link_preview?.url)"
+              >
                 <strong>{{ post.link_preview?.title }}</strong>
                 <p>{{ post.link_preview?.description }}</p>
                 <small>{{ post.link_preview?.host }}</small>
               </div>
               <div class="post-actions">
                 <button class="icon-action-button" @click.stop="onPreviewLike(post)" title="Like" aria-label="Like">
-                  <svg viewBox="0 0 24 24" class="icon"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  <svg viewBox="0 0 24 24" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 6.00019C10.2006 3.90317 7.19377 3.2551 4.93923 5.17534C2.68468 7.09558 2.36727 10.3061 4.13778 12.5772C5.60984 14.4654 10.0648 18.4479 11.5249 19.7369C11.6882 19.8811 11.7699 19.9532 11.8652 19.9815C11.9483 20.0062 12.0393 20.0062 12.1225 19.9815C12.2178 19.9532 12.2994 19.8811 12.4628 19.7369C13.9229 18.4479 18.3778 14.4654 19.8499 12.5772C21.6204 10.3061 21.3417 7.07538 19.0484 5.17534C16.7551 3.2753 13.7994 3.90317 12 6.00019Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                   <span>{{ post.interaction_counts.like }}</span>
                 </button>
                 <button class="icon-action-button" @click.stop="onPreviewReply(post)" title="Reply" aria-label="Reply">
-                  <svg viewBox="0 0 24 24" class="icon"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H7l-4 3V12a8.5 8.5 0 1 1 18 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  <svg viewBox="0 0 24 24" class="icon"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 13.5997 2.37562 15.1116 3.04346 16.4525C3.22094 16.8088 3.28001 17.2161 3.17712 17.6006L2.58151 19.8267C2.32295 20.793 3.20701 21.677 4.17335 21.4185L6.39939 20.8229C6.78393 20.72 7.19121 20.7791 7.54753 20.9565C8.88837 21.6244 10.4003 22 12 22Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
                   <span>{{ post.interaction_counts.reply }}</span>
                 </button>
-                <button class="icon-action-button" @click.stop="onPreviewRepost(post)" title="Repost" aria-label="Repost">
-                  <svg viewBox="0 0 24 24" class="icon"><path d="M7 7h11l-2.5-2.5M17 17H6l2.5 2.5M18 7v6M6 17v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <button class="icon-action-button" @click.stop="onPreviewRepost(post)" title="Amplify" aria-label="Amplify">
+                  <svg viewBox="0 0 24 24" class="icon"><path d="M4.06189 13C4.02104 12.6724 4 12.3387 4 12C4 7.58172 7.58172 4 12 4C14.5006 4 16.7332 5.14727 18.2002 6.94416M19.9381 11C19.979 11.3276 20 11.6613 20 12C20 16.4183 16.4183 20 12 20C9.61061 20 7.46589 18.9525 6 17.2916M9 17H6V17.2916M18.2002 4V6.94416M18.2002 6.94416V6.99993L15.2002 7M6 20V17.2916" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                   <span>{{ post.interaction_counts.repost }}</span>
                 </button>
                 <button class="icon-action-button" @click.stop="onPreviewBookmark(post)" title="Bookmark" aria-label="Bookmark">
@@ -1371,7 +1444,7 @@ function onLogout() {
                 </button>
               </div>
             </article>
-            <p v-if="(suggestionPreviewPosts[Number(item.data.user_id || 0)] || []).length === 0">No recent posts.</p>
+            <p v-if="(suggestionPreviewPosts[Number(item.data.user_id || 0)] || []).length === 0">No recent conversations.</p>
           </div>
         </template>
         <template v-else>
@@ -1410,9 +1483,9 @@ function onLogout() {
           min="1"
           max="5000"
           step="1"
-          placeholder="Posts per user"
+          placeholder="Conversations per user"
         />
-          <p>Estimated total posts: {{ Math.max(1, Math.min(200000, Math.trunc(Number(demoSeedTotalUsers) || 1) * Math.trunc(Number(demoSeedPostsPerUser) || 1))) }}</p>
+          <p>Estimated total conversations: {{ Math.max(1, Math.min(200000, Math.trunc(Number(demoSeedTotalUsers) || 1) * Math.trunc(Number(demoSeedPostsPerUser) || 1))) }}</p>
           <button @click="resetAndRegenerateDemo" :disabled="isResettingDemo">
             {{ isResettingDemo ? "Resetting demo data..." : "Reset & regenerate demo data" }}
           </button>
@@ -1428,7 +1501,7 @@ function onLogout() {
           </button>
         </li>
       </ul>
-      <h2>Top Posts: #{{ selectedInterestTag }}</h2>
+      <h2>Top Conversations: #{{ selectedInterestTag }}</h2>
       <ul class="interest-list">
         <li v-for="post in topInterestPosts" :key="post.id">
           {{ post.content }}
@@ -1444,7 +1517,6 @@ function onLogout() {
     </aside>
 
     <ComposeView v-if="activeModal === 'compose'" embedded @close="closeModal" />
-    <ProfileView v-if="activeModal === 'profile'" embedded @close="closeModal" />
     <ThemeStudioView v-if="activeModal === 'theme-studio'" embedded @close="closeModal" />
     <div v-if="showReplyModal" class="modal-overlay" @click.self="closeReplyModal">
       <section class="auth-card modal-card mention-host-card">
@@ -1464,11 +1536,7 @@ function onLogout() {
             aria-label="Add image"
             @click="openReplyImagePicker"
           >
-            <svg viewBox="0 0 24 24" class="icon">
-              <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
-              <circle cx="9" cy="10" r="1.8" fill="none" stroke="currentColor" stroke-width="1.8" />
-              <path d="m5 17 4.5-4.5L13 16l2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
+            <svg viewBox="0 0 24 24" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M23 4C23 2.34315 21.6569 1 20 1H4C2.34315 1 1 2.34315 1 4V20C1 21.6569 2.34315 23 4 23H20C21.6569 23 23 21.6569 23 20V4ZM21 4C21 3.44772 20.5523 3 20 3H4C3.44772 3 3 3.44772 3 4V20C3 20.5523 3.44772 21 4 21H20C20.5523 21 21 20.5523 21 20V4Z" fill="currentColor"/><path d="M4.80665 17.5211L9.1221 9.60947C9.50112 8.91461 10.4989 8.91461 10.8779 9.60947L14.0465 15.4186L15.1318 13.5194C15.5157 12.8476 16.4843 12.8476 16.8682 13.5194L19.1451 17.5039C19.526 18.1705 19.0446 19 18.2768 19H5.68454C4.92548 19 4.44317 18.1875 4.80665 17.5211Z" fill="currentColor"/><path d="M18 8C18 9.10457 17.1046 10 16 10C14.8954 10 14 9.10457 14 8C14 6.89543 14.8954 6 16 6C17.1046 6 18 6.89543 18 8Z" fill="currentColor"/></svg>
           </button>
           <input
             ref="replyAttachmentInputRef"
@@ -1493,18 +1561,18 @@ function onLogout() {
         <div class="modal-actions">
           <button type="button" @click="closeReplyModal">Cancel</button>
           <button type="button" :disabled="!replyDraft.trim() || isReplyUploadingImage" @click="submitReplyModal">
-            Post reply
+            Reply
           </button>
         </div>
       </section>
     </div>
     <div v-if="showShareModal" class="modal-overlay" @click.self="closeShareModal">
       <section class="auth-card modal-card mention-host-card">
-        <h2>Share</h2>
+        <h2>Amplify</h2>
         <MentionComposerInput
           v-model="shareDraft"
           :tagged-user-ids="shareTaggedUserIds"
-          placeholder="Add your share text (optional)"
+          placeholder="Add your amplify text (optional)"
           @update:tagged-user-ids="shareTaggedUserIds = $event"
         />
         <div class="composer-attachment-tools">
@@ -1515,11 +1583,7 @@ function onLogout() {
             aria-label="Add image"
             @click="openShareImagePicker"
           >
-            <svg viewBox="0 0 24 24" class="icon">
-              <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
-              <circle cx="9" cy="10" r="1.8" fill="none" stroke="currentColor" stroke-width="1.8" />
-              <path d="m5 17 4.5-4.5L13 16l2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
+            <svg viewBox="0 0 24 24" class="icon"><path fill-rule="evenodd" clip-rule="evenodd" d="M23 4C23 2.34315 21.6569 1 20 1H4C2.34315 1 1 2.34315 1 4V20C1 21.6569 2.34315 23 4 23H20C21.6569 23 23 21.6569 23 20V4ZM21 4C21 3.44772 20.5523 3 20 3H4C3.44772 3 3 3.44772 3 4V20C3 20.5523 3.44772 21 4 21H20C20.5523 21 21 20.5523 21 20V4Z" fill="currentColor"/><path d="M4.80665 17.5211L9.1221 9.60947C9.50112 8.91461 10.4989 8.91461 10.8779 9.60947L14.0465 15.4186L15.1318 13.5194C15.5157 12.8476 16.4843 12.8476 16.8682 13.5194L19.1451 17.5039C19.526 18.1705 19.0446 19 18.2768 19H5.68454C4.92548 19 4.44317 18.1875 4.80665 17.5211Z" fill="currentColor"/><path d="M18 8C18 9.10457 17.1046 10 16 10C14.8954 10 14 9.10457 14 8C14 6.89543 14.8954 6 16 6C17.1046 6 18 6.89543 18 8Z" fill="currentColor"/></svg>
           </button>
           <input
             ref="shareAttachmentInputRef"
@@ -1536,26 +1600,30 @@ function onLogout() {
             class="post-attachment-card"
           >
             <button type="button" class="post-attachment-remove" @click="removeShareAttachment(attachmentIndex)">x</button>
-            <img :src="attachment.media_url" alt="Share attachment" />
+            <img :src="attachment.media_url" alt="Amplify attachment" />
           </div>
         </div>
         <p v-if="isShareUploadingImage">Uploading image...</p>
         <input v-model="shareLinkDraft" placeholder="Optional link URL" />
         <div class="modal-actions">
           <button type="button" @click="closeShareModal">Cancel</button>
-          <button type="button" :disabled="isShareUploadingImage" @click="submitShareModal">Share</button>
+          <button type="button" :disabled="isShareUploadingImage" @click="submitShareModal">Amplify</button>
         </div>
       </section>
     </div>
     <div v-if="showCopyLinkModal" class="modal-overlay" @click.self="closeCopyLinkModal">
       <section class="auth-card modal-card">
-        <h2>Copy post link</h2>
+        <h2>Copy conversation link</h2>
         <input :value="copyLinkFallbackValue" readonly />
         <div class="modal-actions">
           <button type="button" @click="closeCopyLinkModal">Close</button>
         </div>
       </section>
     </div>
+    <InAppBrowserModal
+      v-model="showInAppBrowser"
+      :initial-url="inAppBrowserUrl"
+    />
     <div v-if="feedStore.isLoading && !feedStore.items.length" class="loading-overlay page-loading">
       <div class="spinner" />
     </div>
@@ -1571,7 +1639,7 @@ function onLogout() {
           Records: {{ demoCreatedRecordCount }} / {{ demoTotalRecordCount }}
         </p>
         <p>
-          Accounts: {{ demoProgressStatus.seed_created_users }} / {{ demoProgressStatus.seed_total_users }} · Posts:
+          Accounts: {{ demoProgressStatus.seed_created_users }} / {{ demoProgressStatus.seed_total_users }} · Conversations:
           {{ demoProgressStatus.seed_created_posts }} / {{ demoProgressStatus.seed_total_posts }}
         </p>
         <p v-if="demoProgressStatus.seed_last_message">{{ demoProgressStatus.seed_last_message }}</p>

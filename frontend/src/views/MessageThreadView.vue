@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { useErrorModalStore } from "../stores/error-modal";
 import { useMessagesStore } from "../stores/messages";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
+import { extractFirstHttpUrl } from "../utils/link-input";
+
+const InAppBrowserModal = defineAsyncComponent(async () => {
+  const componentModule = await import("../components/InAppBrowserModal.vue");
+  return (componentModule as { default?: unknown }).default || componentModule;
+});
 
 const route = useRoute();
 const router = useRouter();
@@ -19,6 +25,8 @@ const isSending = ref(false);
 const isLoading = ref(false);
 const messageScrollContainer = ref<HTMLElement | null>(null);
 const messageTopAnchor = ref<HTMLElement | null>(null);
+const showInAppBrowser = ref(false);
+const inAppBrowserUrl = ref("");
 let observer: IntersectionObserver | null = null;
 const maxMessageChars = 2000;
 
@@ -65,9 +73,18 @@ function hasLinkPreviewContent(linkPreview: unknown): boolean {
   return Boolean(preview.title || preview.description || preview.host || preview.url);
 }
 
+function openInAppBrowser(rawUrl: unknown) {
+  const normalizedUrl = extractFirstHttpUrl(String(rawUrl || ""));
+  if (!normalizedUrl) {
+    return;
+  }
+  inAppBrowserUrl.value = normalizedUrl;
+  showInAppBrowser.value = true;
+}
+
 async function loadThreadMessages(reset = false) {
   if (!Number.isInteger(threadId.value) || threadId.value <= 0) {
-    errorModalStore.showError("Invalid message thread.");
+    errorModalStore.showError("Invalid private conversation thread.");
     return;
   }
   if (reset) {
@@ -80,7 +97,7 @@ async function loadThreadMessages(reset = false) {
     }
     await messagesStore.loadThreadMessages(threadId.value, reset);
   } catch {
-    errorModalStore.showError("Unable to load thread messages.");
+    errorModalStore.showError("Unable to load private conversation messages.");
   } finally {
     if (reset) {
       isLoading.value = false;
@@ -101,7 +118,7 @@ async function submitMessage() {
   try {
     await messagesStore.sendMessage(threadId.value, {
       content,
-      link_url: linkUrlDraft.value.trim(),
+      link_url: extractFirstHttpUrl(linkUrlDraft.value),
       attachments: attachmentDrafts.value,
     });
     messageDraft.value = "";
@@ -112,7 +129,7 @@ async function submitMessage() {
       messageScrollContainer.value.scrollTop = messageScrollContainer.value.scrollHeight;
     }
   } catch {
-    errorModalStore.showError("Unable to send message.");
+    errorModalStore.showError("Unable to send private conversation message.");
   } finally {
     isSending.value = false;
   }
@@ -153,17 +170,17 @@ watch(
 <template>
   <main class="post-detail-page dm-thread-page">
     <button class="back-button icon-only-button" type="button" @click="goBack" title="Back" aria-label="Back">
-      <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 16 16" class="icon"><path d="M5 1H4L0 5L4 9H5V6H11C12.6569 6 14 7.34315 14 9C14 10.6569 12.6569 12 11 12H4V14H11C13.7614 14 16 11.7614 16 9C16 6.23858 13.7614 4 11 4H5V1Z" fill="currentColor"/></svg>
     </button>
     <h1 class="feed-title">
-      {{ activeThread?.other_display_name || "Thread" }}
+      {{ activeThread?.other_display_name || "Private Conversation" }}
     </h1>
     <p v-if="activeThread?.other_username" class="suggestion-meta">@{{ activeThread.other_username }}</p>
-    <p v-if="isLoading">Loading messages...</p>
+    <p v-if="isLoading">Loading private conversation messages...</p>
     <section ref="messageScrollContainer" class="feed-item dm-thread-scroll">
       <div ref="messageTopAnchor" class="feed-status dm-thread-top-anchor">
-        <p v-if="isLoadingMore">Loading older messages...</p>
-        <p v-else-if="hasMore">Scroll up for older messages</p>
+        <p v-if="isLoadingMore">Loading older private conversation messages...</p>
+        <p v-else-if="hasMore">Scroll up for older private conversation messages</p>
       </div>
       <article
         v-for="message in orderedMessages"
@@ -185,7 +202,11 @@ watch(
               {{ attachment.media_type }} attachment
             </a>
           </div>
-          <div v-if="hasLinkPreviewContent(message.link_preview)" class="link-preview">
+          <div
+            v-if="hasLinkPreviewContent(message.link_preview)"
+            class="link-preview clickable-post-card"
+            @click.stop="openInAppBrowser(message.link_preview?.url)"
+          >
             <strong>{{ message.link_preview?.title }}</strong>
             <p>{{ message.link_preview?.description }}</p>
             <small>{{ message.link_preview?.host }}</small>
@@ -198,16 +219,16 @@ watch(
           </p>
         </div>
       </article>
-      <p v-if="!orderedMessages.length" class="feed-status">No messages yet.</p>
+      <p v-if="!orderedMessages.length" class="feed-status">No private conversation messages yet.</p>
     </section>
 
     <section class="feed-item dm-compose-card">
-      <h2>New message</h2>
+      <h2>New private conversation message</h2>
       <textarea
         v-model="messageDraft"
         :maxlength="maxMessageChars"
         rows="5"
-        placeholder="Type your message"
+        placeholder="Type your private conversation message"
       />
       <p class="suggestion-meta">{{ messageCharCount }} / {{ maxMessageChars }}</p>
       <input v-model="linkUrlDraft" type="url" placeholder="Optional link URL" />
@@ -235,5 +256,9 @@ watch(
         </button>
       </div>
     </section>
+    <InAppBrowserModal
+      v-model="showInAppBrowser"
+      :initial-url="inAppBrowserUrl"
+    />
   </main>
 </template>

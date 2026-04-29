@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.ranking import ensure_post_sentiment
+from apps.accounts.models import Profile
 from apps.connections.models import Connection
 from apps.feed.cache_utils import get_user_feed_cache_version
 from apps.feed.serializers import FeedConfigSerializer, FeedPageSerializer
@@ -147,6 +148,33 @@ class FeedListView(APIView):
             for item in getattr(settings, "UNITE_FEED_SUPPRESSED_CATEGORIES", [])
             if str(item).strip()
         )
+        connected_pairs = Connection.objects.filter(
+            status=Connection.Status.ACCEPTED,
+        ).filter(
+            Q(requester=request.user) | Q(recipient=request.user)
+        ).values_list("requester_id", "recipient_id")
+        connected_user_ids = {request.user.id}
+        for requester_id, recipient_id in connected_pairs:
+            connected_user_ids.add(int(requester_id))
+            connected_user_ids.add(int(recipient_id))
+        blocked_pairs = Connection.objects.filter(
+            status=Connection.Status.BLOCKED,
+        ).filter(
+            Q(requester=request.user) | Q(recipient=request.user)
+        ).values_list("requester_id", "recipient_id")
+        blocked_user_ids: set[int] = set()
+        for requester_id, recipient_id in blocked_pairs:
+            if int(requester_id) != request.user.id:
+                blocked_user_ids.add(int(requester_id))
+            if int(recipient_id) != request.user.id:
+                blocked_user_ids.add(int(recipient_id))
+        hidden_private_user_ids = set()
+        if not bool(getattr(request.user, "is_staff", False)):
+            hidden_private_user_ids = set(
+                Profile.objects.filter(is_private_profile=True)
+                .exclude(user_id__in=connected_user_ids)
+                .values_list("user_id", flat=True)
+            )
 
         posts_queryset = (
             Post.objects.select_related("author", "author__profile")
@@ -204,17 +232,13 @@ class FeedListView(APIView):
             .filter(parent_post__isnull=True)
             .order_by("-created_at", "-id")
         )
+        if blocked_user_ids:
+            posts_queryset = posts_queryset.exclude(author_id__in=blocked_user_ids)
+        if hidden_private_user_ids:
+            posts_queryset = posts_queryset.exclude(author_id__in=hidden_private_user_ids)
 
         if mode == "connections":
-            connected_user_ids = Connection.objects.filter(
-                Q(requester=request.user, status=Connection.Status.ACCEPTED)
-                | Q(recipient=request.user, status=Connection.Status.ACCEPTED)
-            ).values_list("requester_id", "recipient_id")
-            flattened = {request.user.id}
-            for requester_id, recipient_id in connected_user_ids:
-                flattened.add(requester_id)
-                flattened.add(recipient_id)
-            posts_queryset = posts_queryset.filter(author_id__in=flattened)
+            posts_queryset = posts_queryset.filter(author_id__in=connected_user_ids)
 
         if cursor:
             try:
@@ -326,17 +350,7 @@ class FeedListView(APIView):
             organic_offset=organic_offset,
             suggestion_candidates=build_suggestion_candidates(user=request.user),
         )
-        connected_pairs = Connection.objects.filter(
-            status=Connection.Status.ACCEPTED,
-        ).filter(
-            Q(requester=request.user) | Q(recipient=request.user)
-        ).values_list("requester_id", "recipient_id")
-        connected_user_ids = set()
-        for requester_id, recipient_id in connected_pairs:
-            if requester_id != request.user.id:
-                connected_user_ids.add(int(requester_id))
-            if recipient_id != request.user.id:
-                connected_user_ids.add(int(recipient_id))
+        connected_for_suggestions = {item for item in connected_user_ids if item != request.user.id}
         for item in injected_items:
             if item.get("item_type") != "suggestion":
                 continue
@@ -345,7 +359,7 @@ class FeedListView(APIView):
             if profile_image_url and profile_image_url.startswith("/"):
                 data["profile_image_url"] = request.build_absolute_uri(profile_image_url)
             suggestion_user_id = int(data.get("user_id") or 0)
-            data["is_connected"] = suggestion_user_id in connected_user_ids
+            data["is_connected"] = suggestion_user_id in connected_for_suggestions
 
         next_cursor = None
         if has_more and cursor_anchor_post:

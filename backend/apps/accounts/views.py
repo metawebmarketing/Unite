@@ -3,6 +3,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
+from django.db.models import Q
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from rest_framework import permissions, status
@@ -24,6 +25,7 @@ from apps.accounts.serializers import (
     SignupSerializer,
     build_auth_payload,
 )
+from apps.connections.models import Connection
 
 User = get_user_model()
 class SignupView(APIView):
@@ -105,7 +107,8 @@ class ProfileView(APIView):
         serializer = ProfileSerializer(profile, data=request.data, partial=True, context={"request": request})
         serializer.is_valid(raise_exception=True)
         updated_profile = serializer.save()
-        queue_profile_generation(updated_profile.id, updated_profile.location or "global")
+        if any(field in serializer.validated_data for field in ("location", "interests")):
+            queue_profile_generation(updated_profile.id, updated_profile.location or "global")
         return Response(serializer.data)
 
 
@@ -116,6 +119,53 @@ class PublicProfileView(APIView):
         payload = dict(serializer.data)
         payload["user_id"] = profile.user_id
         payload["username"] = profile.user.username
+        is_self = bool(request.user.id == profile.user_id)
+        is_staff = bool(getattr(request.user, "is_staff", False))
+        is_connected = Connection.objects.filter(
+            status=Connection.Status.ACCEPTED,
+        ).filter(
+            Q(requester=request.user, recipient_id=profile.user_id)
+            | Q(requester_id=profile.user_id, recipient=request.user)
+        ).exists()
+        is_blocked = Connection.objects.filter(
+            status=Connection.Status.BLOCKED,
+        ).filter(
+            Q(requester=request.user, recipient_id=profile.user_id)
+            | Q(requester_id=profile.user_id, recipient=request.user)
+        ).exists()
+        can_view_private = bool(is_self or is_staff or is_connected)
+        is_limited_view = bool(is_blocked or (profile.is_private_profile and not can_view_private))
+        for private_field in (
+            "receive_notifications",
+            "receive_email_notifications",
+            "receive_push_notifications",
+            "is_private_profile",
+            "require_connection_approval",
+            "algorithm_profile_status",
+            "algorithm_vector",
+            "rank_overall_score",
+            "rank_action_scores",
+            "rank_last_500_count",
+            "rank_provider",
+        ):
+            payload.pop(private_field, None)
+        if is_limited_view:
+            allowed_fields = {
+                "display_name",
+                "bio",
+                "location",
+                "profile_link_url",
+                "profile_image_url",
+                "username",
+                "user_id",
+                "connection_count",
+                "is_ai_account",
+                "ai_badge_enabled",
+            }
+            payload = {key: value for key, value in payload.items() if key in allowed_fields}
+        payload["is_limited_view"] = is_limited_view
+        payload["can_view_feed"] = bool(not is_limited_view)
+        payload["is_blocked_view"] = is_blocked
         return Response(payload)
 
 

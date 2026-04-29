@@ -59,7 +59,7 @@ async function loadThreads(reset = false) {
       beforeDate: beforeDateFilter.value,
     });
   } catch {
-    errorModalStore.showError("Unable to load messages.");
+    errorModalStore.showError("Unable to load private conversations.");
   }
 }
 
@@ -268,13 +268,13 @@ function onFromProfileInputFocus() {
 <template>
   <main class="post-detail-page">
     <button class="back-button icon-only-button" type="button" @click="goBack" title="Back" aria-label="Back">
-      <svg viewBox="0 0 24 24" class="icon"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 16 16" class="icon"><path d="M5 1H4L0 5L4 9H5V6H11C12.6569 6 14 7.34315 14 9C14 10.6569 12.6569 12 11 12H4V14H11C13.7614 14 16 11.7614 16 9C16 6.23858 13.7614 4 11 4H5V1Z" fill="currentColor"/></svg>
     </button>
-    <h1 class="feed-title">Messages</h1>
+    <h1 class="feed-title">Private Conversations</h1>
     <section class="feed-item connections-card">
       <div class="search-input-row">
         <svg viewBox="0 0 24 24" class="icon"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        <input v-model="searchText" type="text" placeholder="Search messages" />
+        <input v-model="searchText" type="text" placeholder="Search private conversations" />
         <button type="button" class="icon-only-button small-round-button" @click="showFilterModal = true">
           <svg viewBox="0 0 24 24" class="icon"><path d="M6 8h12M8 12h8M10 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         </button>
@@ -309,7 +309,7 @@ function onFromProfileInputFocus() {
           </div>
         </div>
         <button type="button" :disabled="isStartingThread" @click="startThread">
-          {{ isStartingThread ? "Starting..." : "Start thread" }}
+          {{ isStartingThread ? "Starting..." : "Start private conversation" }}
         </button>
       </div>
     </section>
@@ -337,19 +337,19 @@ function onFromProfileInputFocus() {
         </span>
         <span v-if="thread.unread_count > 0" class="dm-unread-pill">{{ thread.unread_count }}</span>
       </header>
-      <p class="dm-thread-preview">{{ thread.latest_message_preview || "No messages yet." }}</p>
+      <p class="dm-thread-preview">{{ thread.latest_message_preview || "No private conversations yet." }}</p>
     </article>
 
     <div ref="loadMoreAnchor" class="feed-status">
       <p v-if="isLoading">Loading...</p>
       <p v-else-if="hasMore">Scroll to load more</p>
-      <p v-else-if="threads.length">End of messages</p>
-      <p v-else>No direct messages yet.</p>
+      <p v-else-if="threads.length">End of private conversations</p>
+      <p v-else>No private conversations yet.</p>
     </div>
 
     <div v-if="showFilterModal" class="modal-overlay" @click.self="closeFilterModal">
       <section class="auth-card modal-card mention-host-card filter-modal-card">
-        <h2>Filter messages</h2>
+        <h2>Filter private conversations</h2>
         <label class="connections-filter-row">
           <span>After date</span>
           <input v-model="afterDateFilter" type="date" />

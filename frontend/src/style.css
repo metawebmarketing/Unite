@@ -18,20 +18,108 @@ body {
   font-size: var(--theme-font-size-base);
 }
 
+html,
+body,
+.feed {
+  scrollbar-width: auto;
+  scrollbar-color: #363d52 #070a14;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.feed::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+.feed::-webkit-scrollbar-track {
+  background: #070a14;
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+.feed::-webkit-scrollbar-thumb {
+  background: #363d52;
+  border: 3px solid #070a14;
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
+.feed::-webkit-scrollbar-thumb:hover {
+  background: #49506d;
+}
+
+.left-nav,
+.right-card,
+.modal-card,
+.in-app-browser-modal,
+.dm-suggestion-box,
+.mention-suggestion-box {
+  scrollbar-width: thin;
+  scrollbar-color: #515b7b #070a14;
+}
+
+.left-nav::-webkit-scrollbar,
+.right-card::-webkit-scrollbar,
+.modal-card::-webkit-scrollbar,
+.in-app-browser-modal::-webkit-scrollbar,
+.dm-suggestion-box::-webkit-scrollbar,
+.mention-suggestion-box::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.left-nav::-webkit-scrollbar-track,
+.right-card::-webkit-scrollbar-track,
+.modal-card::-webkit-scrollbar-track,
+.in-app-browser-modal::-webkit-scrollbar-track,
+.dm-suggestion-box::-webkit-scrollbar-track,
+.mention-suggestion-box::-webkit-scrollbar-track {
+  background: #070a14;
+}
+
+.left-nav::-webkit-scrollbar-thumb,
+.right-card::-webkit-scrollbar-thumb,
+.modal-card::-webkit-scrollbar-thumb,
+.in-app-browser-modal::-webkit-scrollbar-thumb,
+.dm-suggestion-box::-webkit-scrollbar-thumb,
+.mention-suggestion-box::-webkit-scrollbar-thumb {
+  background: #515b7b;
+  border-radius: 999px;
+  border: 2px solid #070a14;
+}
+
+.left-nav::-webkit-scrollbar-thumb:hover,
+.right-card::-webkit-scrollbar-thumb:hover,
+.modal-card::-webkit-scrollbar-thumb:hover,
+.in-app-browser-modal::-webkit-scrollbar-thumb:hover,
+.dm-suggestion-box::-webkit-scrollbar-thumb:hover,
+.mention-suggestion-box::-webkit-scrollbar-thumb:hover {
+  background: #626f8f;
+}
+
 #app {
   min-height: 100vh;
 }
 
 .layout {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 280px;
+  grid-template-columns: auto minmax(0, 1fr) 280px;
   min-height: 100vh;
+  align-items: start;
 }
 
 .left-nav,
 .right-card {
   padding: var(--theme-space-md);
   border-right: 1px solid #20212a;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .right-card {
@@ -39,11 +127,18 @@ body {
   border-left: 1px solid #20212a;
 }
 
+.right-card input {
+    margin-bottom: 0.7rem;
+}
+
 .left-nav {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
   align-items: stretch;
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .left-nav a {
@@ -51,17 +146,35 @@ body {
   text-decoration: none;
 }
 
+.nav-logo-link {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: auto;
+  align-self: center;
+  margin-bottom: 0.2rem;
+}
+
+.nav-logo-image {
+  display: block;
+  width: 44px;
+  height: 32px;
+  max-width: 100%;
+}
+
 .nav-icon-link {
   min-height: 42px;
   border: 1px solid #2e3040;
   border-radius: 999px;
   background: #171822;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 0.55rem;
   padding: 0 0.75rem;
   position: relative;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .nav-menu-button {
@@ -121,6 +234,11 @@ body {
 
 .mode-tabs {
   align-items: center;
+  margin-bottom: 0.7rem;
+}
+
+.feed-header > .tab-icon-button {
+  margin-bottom: 0.7rem;
 }
 
 .tab-icon-button {
@@ -183,7 +301,6 @@ button {
 .icon-action-button {
   min-width: 40px;
   height: 36px;
-  padding: 0 0.55rem;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -331,6 +448,110 @@ button {
   display: flex;
   gap: 1rem;
   align-items: center;
+}
+
+.profile-bio-text {
+  white-space: pre-line;
+}
+
+.profile-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.7rem;
+}
+
+.profile-title-row > h1 {
+  margin: 0;
+}
+
+.profile-view-profile-button {
+  min-height: 34px;
+  padding: 0 0.8rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.in-app-browser-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  background: rgba(2, 4, 12, 0.86);
+  display: flex;
+}
+
+.in-app-browser-modal {
+  width: 100%;
+  height: 100%;
+  background: #0b0f1d;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+.in-app-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid #262c3f;
+}
+
+.in-app-browser-url {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  color: #d9e1ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.in-app-browser-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #111827;
+}
+
+.in-app-browser-footer {
+  display: grid;
+  grid-template-rows: 1.15rem auto;
+  align-items: center;
+  padding: 0.7rem;
+  border-top: 1px solid #262c3f;
+}
+
+.in-app-browser-feedback-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.in-app-browser-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.in-app-browser-feedback {
+  font-size: 0.82rem;
+  color: #a9b4d8;
+  min-height: 1.15rem;
+  line-height: 1.15rem;
+  text-align: center;
+}
+
+.profile-link-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.2rem 0 0.35rem;
+}
+
+.profile-link-bullet {
+  color: #7d87aa;
 }
 
 .profile-detail-avatar {
@@ -760,6 +981,120 @@ button {
   font-size: 0.9rem;
 }
 
+.profile-relationship-actions {
+  margin-top: 0.55rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.settings-panel {
+  margin-top: 0.25rem;
+  padding-top: 0.65rem;
+}
+
+.profile-section-heading {
+  display: block;
+  margin: 1.25rem 0 0;
+  font-size: 1.22rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #eef3ff;
+}
+
+.settings-section {
+  margin-top: 0.75rem;
+}
+
+.settings-section h3 {
+  margin: 1.5rem 0 0;
+  font-size: 1.08rem;
+  color: #dfe5ff;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.settings-toggle-row > span {
+  color: #d5d9ea;
+  font-size: 0.92rem;
+}
+
+.field-saving-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.2rem;
+  color: #9aa3bf;
+  font-size: 0.82rem;
+}
+
+.field-saving-indicator .spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
+.settings-switch {
+  position: relative;
+  min-width: 86px;
+  height: 34px;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-block;
+  background: #2a2c36;
+  border: 1px solid #3a3d4b;
+  transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.settings-switch.on {
+  background: #3f8f2b;
+  border-color: #54ad3d;
+}
+
+.settings-switch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-switch-label {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #eef3ff;
+  transition: left 0.2s ease, right 0.2s ease;
+}
+
+.settings-switch-knob {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #f8fbff;
+  border: 1px solid rgba(27, 30, 39, 0.25);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: left 0.2s ease;
+}
+
+.settings-switch.on .settings-switch-label {
+  left: 12px;
+  right: auto;
+}
+
+.settings-switch.on .settings-switch-knob {
+  left: calc(100% - 28px);
+}
+
 .ai-badge-row {
   margin-top: 0;
   color: #d9d5ff;
@@ -823,6 +1158,10 @@ button {
 
 .global-error-overlay {
   z-index: 70;
+}
+
+.global-route-loading-overlay {
+  z-index: 65;
 }
 
 .global-error-card {
@@ -976,6 +1315,10 @@ textarea {
   .right-card {
     border: none;
     border-bottom: 1px solid #20212a;
+    position: static;
+    top: auto;
+    height: auto;
+    overflow: visible;
   }
 
   .left-nav {
@@ -983,6 +1326,8 @@ textarea {
     justify-content: space-around;
     align-items: center;
     padding: 0.65rem var(--theme-space-md);
+    width: 100%;
+    max-width: none;
   }
 
   .nav-icon-link {
@@ -993,6 +1338,10 @@ textarea {
   }
 
   .nav-link-label {
+    display: none;
+  }
+
+  .nav-logo-link {
     display: none;
   }
 

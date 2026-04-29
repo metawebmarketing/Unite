@@ -6,12 +6,14 @@ from django.test import override_settings
 from django.utils import timezone
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.cache import cache
 from rest_framework.test import APITestCase
 from unittest.mock import patch
 from PIL import Image
 
 from apps.accounts.models import Profile, ProfileActionScore
 from apps.ai_accounts.models import AiAccountProfile
+from apps.connections.models import Connection
 from apps.feed.sentiment_providers import SentimentResult
 from apps.moderation.models import ModerationFlag
 from apps.posts.models import (
@@ -257,6 +259,42 @@ class PostsApiTests(APITestCase):
         self.assertEqual(reply_post.link_url, "https://example.com/details")
         self.assertEqual(MediaAttachment.objects.filter(post=reply_post).count(), 1)
 
+    def test_create_post_link_url_keeps_first_valid_url_when_multiple_provided(self):
+        author = User.objects.create_user(username="multi_link_post_author", password="Password123!")
+        Profile.objects.create(user=author, display_name="Multi Link Post Author")
+        self.client.force_authenticate(user=author)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Post with multiple links",
+                "link_url": "https://first.example.com/a and https://second.example.com/b",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        created = Post.objects.get(id=response.data["id"])
+        self.assertEqual(created.link_url, "https://first.example.com/a")
+
+    def test_reply_reaction_link_url_keeps_first_valid_url_when_multiple_provided(self):
+        replier = User.objects.create_user(username="multi_link_reply_user", password="Password123!")
+        author = User.objects.create_user(username="multi_link_reply_author", password="Password123!")
+        Profile.objects.create(user=replier, display_name="Multi Link Reply User")
+        Profile.objects.create(user=author, display_name="Multi Link Reply Author")
+        target_post = Post.objects.create(author=author, content="Reply target")
+        self.client.force_authenticate(user=replier)
+        response = self.client.post(
+            f"/api/v1/posts/{target_post.id}/react",
+            {
+                "action": "reply",
+                "content": "Reply with multiple links",
+                "link_url": "https://first.example.com/reply https://second.example.com/reply",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        interaction = PostInteraction.objects.get(id=response.data["id"])
+        self.assertEqual(interaction.link_url, "https://first.example.com/reply")
+
     def test_repost_toggle_off_for_negative_post_does_not_create_positive_contribution(self):
         user = User.objects.create_user(username="negative_repost_user", password="Password123!")
         Profile.objects.create(user=user, display_name="NegativeRepost")
@@ -323,6 +361,7 @@ class PostsApiTests(APITestCase):
 
     @override_settings(UNITE_SPAM_LINK_WINDOW_SECONDS=300, UNITE_SPAM_LINK_MAX_POSTS=2)
     def test_repeated_link_limit_blocks_after_threshold(self):
+        cache.clear()
         user = User.objects.create_user(username="link_spam_user", password="Password123!")
         Profile.objects.create(user=user, display_name="LinkSpamUser")
         self.client.force_authenticate(user=user)
@@ -661,3 +700,35 @@ class PostsApiTests(APITestCase):
         view = PostListCreateView()
         self.assertEqual(view.resolve_throttle_scope(human), "post_write")
         self.assertEqual(view.resolve_throttle_scope(ai_user), "post_write_ai")
+
+    def test_user_post_list_hides_private_profile_posts_for_non_connection(self):
+        viewer = User.objects.create_user(username="posts_private_viewer", password="Password123!")
+        author = User.objects.create_user(username="posts_private_author", password="Password123!")
+        Profile.objects.create(user=viewer, display_name="Posts Private Viewer")
+        Profile.objects.create(user=author, display_name="Posts Private Author", is_private_profile=True)
+        post = Post.objects.create(author=author, content="private post")
+        self.client.force_authenticate(user=viewer)
+        response = self.client.get(f"/api/v1/posts/user/{author.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+        Connection.objects.create(requester=viewer, recipient=author, status=Connection.Status.ACCEPTED)
+        connected_response = self.client.get(f"/api/v1/posts/user/{author.id}")
+        self.assertEqual(connected_response.status_code, 200)
+        self.assertTrue(any(int(item["id"]) == post.id for item in connected_response.data))
+
+    def test_post_detail_hides_replies_from_blocked_authors(self):
+        viewer = User.objects.create_user(username="posts_block_viewer", password="Password123!")
+        author = User.objects.create_user(username="posts_block_author", password="Password123!")
+        blocked_replier = User.objects.create_user(username="posts_block_replier", password="Password123!")
+        Profile.objects.create(user=viewer, display_name="Posts Block Viewer")
+        Profile.objects.create(user=author, display_name="Posts Block Author")
+        Profile.objects.create(user=blocked_replier, display_name="Posts Block Replier")
+        root_post = Post.objects.create(author=author, content="root post")
+        blocked_reply = Post.objects.create(author=blocked_replier, parent_post=root_post, content="blocked reply")
+        Connection.objects.create(requester=viewer, recipient=blocked_replier, status=Connection.Status.BLOCKED)
+        self.client.force_authenticate(user=viewer)
+        response = self.client.get(f"/api/v1/posts/{root_post.id}")
+        self.assertEqual(response.status_code, 200)
+        reply_ids = {int(item["id"]) for item in response.data["replies"]}
+        self.assertNotIn(blocked_reply.id, reply_ids)
