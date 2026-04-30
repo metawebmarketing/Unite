@@ -1,18 +1,24 @@
+from datetime import timedelta
+import secrets
+from smtplib import SMTPException
+
 from django.shortcuts import get_object_or_404
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import send_mail
 from django.db.models import Q
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
+from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.models import Profile
+from apps.accounts.emailing import send_password_reset_email, send_signup_invite_email
+from apps.accounts.models import Profile, SignupInvite, SiteSetting
 from apps.accounts.image_processing import optimize_profile_image
+from apps.accounts.runtime_config import get_runtime_config
 from apps.accounts.services import queue_profile_generation
 from apps.accounts.serializers import (
     AuthResponseSerializer,
@@ -22,8 +28,11 @@ from apps.accounts.serializers import (
     PasswordResetRequestSerializer,
     ProfileImageUploadSerializer,
     ProfileSerializer,
+    SendInviteSerializer,
+    SiteSettingSerializer,
     SignupSerializer,
     build_auth_payload,
+    normalize_invite_token,
 )
 from apps.connections.models import Connection
 
@@ -32,7 +41,7 @@ class SignupView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        serializer = SignupSerializer(data=request.data)
+        serializer = SignupSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         profile = Profile.objects.get(user=user)
@@ -67,16 +76,12 @@ class PasswordResetRequestView(APIView):
             "message": "If an account exists for this email, reset instructions have been issued.",
         }
         if user:
+            runtime_config = get_runtime_config()
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = default_token_generator.make_token(user)
-            reset_path = f"/reset-password?uid={uid}&token={token}"
-            send_mail(
-                subject="Unite password reset instructions",
-                message=f"Use this reset link: {reset_path}",
-                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@unite.local"),
-                recipient_list=[user.email],
-                fail_silently=True,
-            )
+            frontend_base_url = str(runtime_config.get("frontend_base_url", "http://localhost:5173")).rstrip("/")
+            reset_url = f"{frontend_base_url}/reset-password?uid={uid}&token={token}"
+            send_password_reset_email(to_email=user.email, reset_url=reset_url)
             if settings.DEBUG:
                 response_payload["debug_reset"] = {"uid": uid, "token": token}
         return Response(response_payload, status=status.HTTP_202_ACCEPTED)
@@ -134,7 +139,7 @@ class PublicProfileView(APIView):
             | Q(requester_id=profile.user_id, recipient=request.user)
         ).exists()
         can_view_private = bool(is_self or is_staff or is_connected)
-        is_limited_view = bool(is_blocked or (profile.is_private_profile and not can_view_private))
+        is_limited_view = bool((not is_staff) and (is_blocked or (profile.is_private_profile and not can_view_private)))
         for private_field in (
             "receive_notifications",
             "receive_email_notifications",
@@ -204,4 +209,85 @@ class OnboardingInterestsView(APIView):
                 "profile_generation": "queued",
             },
             status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class PublicSignupConfigView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        settings_obj = SiteSetting.get_solo()
+        allowed_countries = [
+            str(item).strip()
+            for item in (settings_obj.allowed_signup_countries or [])
+            if str(item).strip()
+        ]
+        return Response(
+            {
+                "register_via_invite_only": bool(settings_obj.register_via_invite_only),
+                "allowed_signup_countries": allowed_countries,
+            }
+        )
+
+
+class PublicSignupInviteValidationView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        token = normalize_invite_token(str(request.query_params.get("token", "")))
+        if not token:
+            return Response({"is_valid": False, "invited_email": ""})
+        invite = SignupInvite.objects.filter(token=token).first()
+        if not invite or not invite.is_valid():
+            return Response({"is_valid": False, "invited_email": ""})
+        return Response({"is_valid": True, "invited_email": str(invite.email).strip().lower()})
+
+
+class SiteSettingsView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        settings_obj = SiteSetting.get_solo()
+        serializer = SiteSettingSerializer(settings_obj, context={"request": request})
+        return Response(serializer.data)
+
+    def patch(self, request):
+        settings_obj = SiteSetting.get_solo()
+        serializer = SiteSettingSerializer(settings_obj, data=request.data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SendSignupInviteView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        serializer = SendInviteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+        token = secrets.token_urlsafe(32)
+        invite = SignupInvite.objects.create(
+            email=email,
+            token=token,
+            expires_at=timezone.now() + timedelta(days=7),
+            invited_by=request.user,
+        )
+        runtime_config = get_runtime_config()
+        frontend_base_url = str(runtime_config.get("frontend_base_url", "http://localhost:5173")).rstrip("/")
+        invite_url = f"{frontend_base_url}/signup?invite={invite.token}"
+        try:
+            send_signup_invite_email(to_email=email, invite_url=invite_url)
+        except (SMTPException, TimeoutError, OSError):
+            invite.delete()
+            return Response(
+                {"detail": "Invite email could not be sent. Check email configuration and try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(
+            {
+                "message": "Invite sent.",
+                "invite_expires_at": invite.expires_at,
+            },
+            status=status.HTTP_201_CREATED,
         )

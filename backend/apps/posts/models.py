@@ -96,6 +96,7 @@ class LinkPreviewCache(models.Model):
     host = models.CharField(max_length=255)
     title = models.CharField(max_length=255)
     description = models.CharField(max_length=512, blank=True)
+    image_url = models.URLField(blank=True)
     source = models.CharField(max_length=24, default="fallback")
     fetched_at = models.DateTimeField(auto_now=True)
     expires_at = models.DateTimeField(db_index=True)

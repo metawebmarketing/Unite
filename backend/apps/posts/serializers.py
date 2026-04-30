@@ -29,6 +29,7 @@ class MediaAttachmentSerializer(serializers.ModelSerializer):
 
 class PostSerializer(serializers.ModelSerializer):
     link_url = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+    link_preview = serializers.SerializerMethodField(read_only=True)
     attachments = MediaAttachmentSerializer(many=True, required=False)
     interaction_counts = serializers.DictField(read_only=True)
     has_liked = serializers.BooleanField(read_only=True)
@@ -95,6 +96,15 @@ class PostSerializer(serializers.ModelSerializer):
         for attachment in attachments_data:
             MediaAttachment.objects.create(post=post, **attachment)
         return post
+
+    def get_link_preview(self, obj):
+        preview = obj.link_preview if isinstance(obj.link_preview, dict) else {}
+        if preview.get("image_url"):
+            return preview
+        link_url = str(getattr(obj, "link_url", "") or "").strip()
+        if not link_url:
+            return preview
+        return build_link_preview(link_url)
 
 
 class ReactSerializer(serializers.Serializer):

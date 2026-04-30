@@ -42,6 +42,7 @@ async function onSubmit() {
       <button type="submit">{{ isBusy ? "Signing in..." : "Log in" }}</button>
       <div v-if="isBusy" class="progress-track"><div class="progress-fill progress-indeterminate" /></div>
       <router-link to="/forgot-password">Forgot password?</router-link>
+      <router-link to="/signup">Need an account? Register</router-link>
     </form>
     <div v-if="isBusy" class="loading-overlay">
       <div class="spinner" />

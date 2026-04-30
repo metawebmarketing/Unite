@@ -23,6 +23,11 @@ export interface Profile {
   rank_action_scores?: Record<string, { sum: number; count: number; avg: number }>;
   rank_last_500_count?: number;
   rank_provider?: string;
+  date_of_birth?: string;
+  gender?: string;
+  gender_self_describe?: string;
+  zip_code?: string;
+  country?: string;
 }
 
 export interface PublicProfile extends Profile {

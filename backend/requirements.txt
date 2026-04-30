@@ -5,6 +5,7 @@ django-cors-headers
 channels
 channels-redis
 daphne
+twisted[http2,tls]
 celery
 redis
 Pillow

@@ -51,6 +51,7 @@ export interface PostRecord extends PostAuthorSummary {
     host: string;
     title: string;
     description: string;
+    image_url?: string;
   };
   tagged_user_ids?: number[];
   attachments?: Array<{ media_type: "image"; media_url: string }>;

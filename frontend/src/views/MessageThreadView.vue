@@ -69,8 +69,8 @@ function hasLinkPreviewContent(linkPreview: unknown): boolean {
   if (!linkPreview || typeof linkPreview !== "object") {
     return false;
   }
-  const preview = linkPreview as { title?: string; description?: string; host?: string; url?: string };
-  return Boolean(preview.title || preview.description || preview.host || preview.url);
+  const preview = linkPreview as { title?: string; description?: string; host?: string; url?: string; image_url?: string };
+  return Boolean(preview.title || preview.description || preview.host || preview.url || preview.image_url);
 }
 
 function openInAppBrowser(rawUrl: unknown) {
@@ -207,9 +207,20 @@ watch(
             class="link-preview clickable-post-card"
             @click.stop="openInAppBrowser(message.link_preview?.url)"
           >
-            <strong>{{ message.link_preview?.title }}</strong>
-            <p>{{ message.link_preview?.description }}</p>
-            <small>{{ message.link_preview?.host }}</small>
+            <img
+              v-if="message.link_preview?.image_url"
+              :src="message.link_preview?.image_url"
+              class="link-preview-image"
+              alt="Link preview"
+              loading="lazy"
+            />
+            <div class="link-preview-content">
+              <strong class="link-preview-title">{{ message.link_preview?.title }}</strong>
+              <p v-if="message.link_preview?.description" class="link-preview-description">
+                {{ message.link_preview?.description }}
+              </p>
+              <small v-if="message.link_preview?.host" class="link-preview-host">{{ message.link_preview?.host }}</small>
+            </div>
           </div>
           <p class="suggestion-meta dm-message-meta">
             <span v-if="formatLocalizedPostDateTime(message.created_at)">

@@ -10,6 +10,7 @@ import PinnedPostsView from "../views/PinnedPostsView.vue";
 import PolicyLabView from "../views/PolicyLabView.vue";
 import PostDetailView from "../views/PostDetailView.vue";
 import SearchView from "../views/SearchView.vue";
+import SiteSettingsView from "../views/SiteSettingsView.vue";
 import UserProfileView from "../views/UserProfileView.vue";
 
 const router = createRouter({
@@ -53,6 +54,12 @@ const router = createRouter({
       path: "/ai-audit",
       name: "ai-audit",
       component: AiAuditView,
+      meta: { requiresAuth: true, requiresStaff: true },
+    },
+    {
+      path: "/site-settings",
+      name: "site-settings",
+      component: SiteSettingsView,
       meta: { requiresAuth: true, requiresStaff: true },
     },
     {

@@ -128,13 +128,20 @@ def serialize_message_item(
             sender_status = DMMessage.DeliveryStatus.READ
     else:
         sender_status = DMMessage.DeliveryStatus.READ
+    existing_preview = message.link_preview if isinstance(message.link_preview, dict) else {}
+    preview_url = str(existing_preview.get("url") or "").strip()
+    resolved_preview = (
+        existing_preview
+        if str(existing_preview.get("image_url") or "").strip()
+        else build_link_preview(preview_url) if preview_url else existing_preview
+    )
     return {
         "id": message.id,
         "thread_id": message.thread_id,
         "sender_id": message.sender_id,
         "content": message.content,
         "attachments": message.attachments if isinstance(message.attachments, list) else [],
-        "link_preview": message.link_preview if isinstance(message.link_preview, dict) else {},
+        "link_preview": resolved_preview,
         "created_at": message.created_at.isoformat(),
         "status": sender_status,
     }

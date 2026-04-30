@@ -22,6 +22,7 @@ from apps.feed.suggestions import build_suggestion_candidates
 from apps.moderation.models import ModerationFlag
 from apps.posts.models import Post
 from apps.posts.models import PostInteraction
+from apps.posts.services import build_link_preview
 
 ALLOWED_POST_DATA_FIELDS = {
     "id",
@@ -78,7 +79,7 @@ def build_feed_cache_key(
         f"region={region}|interest={interest_tag or 'none'}|fields={fields_signature}|v={user_cache_version}"
     )
     digest = sha256(raw.encode("utf-8")).hexdigest()
-    return f"feed:v1:{digest}"
+    return f"feed:v2:{digest}"
 
 
 def parse_requested_post_fields(raw_fields: str | None) -> set[str] | None:
@@ -319,7 +320,11 @@ class FeedListView(APIView):
                 "content": post.content or "No content provided.",
                 "interest_tags": post.interest_tags if isinstance(post.interest_tags, list) else [],
                 "created_at": post.created_at.isoformat(),
-                "link_preview": post.link_preview,
+                "link_preview": (
+                    post.link_preview
+                    if isinstance(post.link_preview, dict) and str(post.link_preview.get("image_url") or "").strip()
+                    else build_link_preview(str(post.link_url or "").strip()) if str(post.link_url or "").strip() else {}
+                ),
                 "rank_score": score_map.get(post.id, 0),
                 "interaction_counts": {
                     "like": post.like_count,

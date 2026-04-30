@@ -20,6 +20,7 @@ export interface FeedItem {
       host: string;
       title: string;
       description: string;
+      image_url?: string;
     };
     rank_score?: number;
     has_liked?: boolean;

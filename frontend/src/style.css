@@ -514,6 +514,16 @@ button {
   background: #111827;
 }
 
+.in-app-browser-frame-wrap {
+  position: relative;
+  min-height: 0;
+}
+
+.in-app-browser-loading-overlay {
+  border-radius: 0;
+  z-index: 1;
+}
+
 .in-app-browser-footer {
   display: grid;
   grid-template-rows: 1.15rem auto;
@@ -993,13 +1003,22 @@ button {
   padding-top: 0.65rem;
 }
 
-.profile-section-heading {
+.profile-section-heading:not(.admin-settings) {
   display: block;
   margin: 1.25rem 0 0;
   font-size: 1.22rem;
   font-weight: 700;
   letter-spacing: 0.01em;
   color: #eef3ff;
+}
+
+.profile-section-heading.admin-settings {
+  display: block;
+  margin: 0.2rem 0 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #d5d9ea;
 }
 
 .settings-section {
@@ -1010,6 +1029,40 @@ button {
   margin: 1.5rem 0 0;
   font-size: 1.08rem;
   color: #dfe5ff;
+}
+
+.settings-ribbon {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  margin: 0 0 0.75rem;
+  border-radius: 10px;
+  border: 1px solid #2e3040;
+  background: #151a2a;
+}
+
+.settings-ribbon-title {
+  font-weight: 700;
+  color: #eef3ff;
+}
+
+.settings-ribbon.is-success {
+  border-color: #2f6e55;
+  background: #12261f;
+}
+
+.settings-ribbon.is-error {
+  border-color: #8a3647;
+  background: #2a161d;
+}
+
+.settings-ribbon.is-info {
+  border-color: #39456a;
+  background: #151a2a;
 }
 
 .settings-toggle-row {
@@ -1104,9 +1157,38 @@ button {
 .link-preview {
   border: 1px solid var(--theme-border);
   border-radius: var(--theme-radius-md);
-  padding: var(--theme-space-sm);
+  padding: 0;
   margin-top: var(--theme-space-sm);
   background: #0f1118;
+  overflow: hidden;
+  max-width: 500px;
+}
+
+.link-preview-image {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-bottom: 1px solid var(--theme-border);
+}
+
+.link-preview-content {
+  display: grid;
+  gap: 0.35rem;
+  padding: var(--theme-space-sm);
+}
+
+.link-preview-title {
+  color: #f5f7ff;
+}
+
+.link-preview-description {
+  margin: 0;
+  color: #b3b9d3;
+}
+
+.link-preview-host {
+  color: #8f95b1;
 }
 
 .interest-list {
@@ -1218,6 +1300,14 @@ button {
   animation: indeterminate 1.2s ease-in-out infinite;
 }
 
+.signup-field-label {
+  display: block;
+  margin: 0.1rem 0 -0.35rem 0.3rem;
+  color: #d5d9ea;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .stack {
   display: grid;
   gap: 0.7rem;
@@ -1239,6 +1329,12 @@ button {
   border: 1px solid #2e3040;
   color: #c8dbff;
   border-radius: 999px;
+}
+
+.suggestion-chip.active {
+  background: #1d2438;
+  border-color: #5f78ff;
+  color: #e8edff;
 }
 
 .chip-row {
@@ -1263,6 +1359,10 @@ button {
   color: #cfd8ff;
   padding: 0;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
 
 .profile-image-preview {
@@ -1296,7 +1396,8 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   box-sizing: border-box;
   background: #0d0f16;
@@ -1304,6 +1405,57 @@ textarea {
   color: #f8f8ff;
   border-radius: 10px;
   padding: 0.6rem;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 2.3rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%23f8f8ff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 14px 14px;
+}
+
+.signup-country-field {
+  position: relative;
+}
+
+.signup-country-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #141926;
+  border: 1px solid #2e3040;
+  border-radius: 10px;
+  padding: 0.25rem;
+  z-index: 40;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.signup-country-option {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #f8f8ff;
+  padding: 0.5rem 0.55rem;
+}
+
+.signup-country-option:hover {
+  background: #1d2438;
+  border-color: #39456a;
+}
+
+.signup-country-option.active {
+  background: #1d2438;
+  border-color: #39456a;
 }
 
 @media (max-width: 900px) {

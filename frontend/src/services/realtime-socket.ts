@@ -24,7 +24,7 @@ class RealtimeSocketService {
   connect(options: ConnectOptions) {
     this.options = options;
     this.shouldReconnect = true;
-    this.openSocket();
+    void this.openSocket();
   }
 
   disconnect() {
@@ -40,12 +40,25 @@ class RealtimeSocketService {
     this.options?.onStateChange?.("disconnected");
   }
 
-  private openSocket() {
+  private async openSocket() {
     const options = this.options;
-    const token = options?.getToken() || null;
+    let token = options?.getToken() || null;
     if (!options || !token) {
       this.disconnect();
       return;
+    }
+    if (this.isAccessTokenExpired(token)) {
+      const canRetry = await this.handleAuthFailure(options);
+      if (!canRetry) {
+        this.shouldReconnect = false;
+        this.disconnect();
+        return;
+      }
+      token = options.getToken() || null;
+      if (!token) {
+        this.disconnect();
+        return;
+      }
     }
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) {
       return;
@@ -100,7 +113,7 @@ class RealtimeSocketService {
       clearTimeout(this.reconnectTimer);
     }
     this.reconnectTimer = setTimeout(() => {
-      this.openSocket();
+      void this.openSocket();
     }, waitMs);
   }
 
@@ -121,6 +134,26 @@ class RealtimeSocketService {
     const wsUrl = new URL(`${wsProtocol}//${apiUrl.host}/ws/notifications/`);
     wsUrl.searchParams.set("token", token);
     return wsUrl.toString();
+  }
+
+  private isAccessTokenExpired(token: string): boolean {
+    try {
+      const segments = token.split(".");
+      if (segments.length < 2) {
+        return false;
+      }
+      const payloadSegment = segments[1].replace(/-/g, "+").replace(/_/g, "/");
+      const paddedSegment = payloadSegment.padEnd(Math.ceil(payloadSegment.length / 4) * 4, "=");
+      const payload = JSON.parse(atob(paddedSegment)) as { exp?: number };
+      const expTimestampSeconds = Number(payload.exp || 0);
+      if (!expTimestampSeconds) {
+        return false;
+      }
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      return expTimestampSeconds <= nowSeconds + 15;
+    } catch {
+      return false;
+    }
   }
 }
 

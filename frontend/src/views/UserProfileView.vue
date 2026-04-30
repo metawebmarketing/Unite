@@ -286,6 +286,15 @@ watch(
             {{ Number(profile.rank_last_500_count || 0) }}
           </p>
           <p v-if="authStore.isStaff && profile.rank_provider" class="suggestion-meta">Provider: {{ profile.rank_provider }}</p>
+          <p
+            v-if="authStore.isStaff && (profile.date_of_birth || profile.gender || profile.zip_code || profile.country)"
+            class="suggestion-meta"
+          >
+            DOB: {{ profile.date_of_birth || "-" }} ·
+            Gender: {{ profile.gender === "self_describe" ? profile.gender_self_describe || "Self Describe" : profile.gender || "-" }} ·
+            ZIP: {{ profile.zip_code || "-" }} ·
+            Country: {{ profile.country || "-" }}
+          </p>
           <div v-if="authStore.isStaff && perActionRankRows.length" class="suggestion-meta">
             <span v-for="row in perActionRankRows.slice(0, 4)" :key="row.action">
               {{ row.action }} {{ formatScore(row.sum) }} ({{ row.count }}) ·

@@ -1,0 +1,18 @@
+---
+description: Prevent modal dropdown clipping in viewport
+globs: frontend/src/views/**/*.vue
+alwaysApply: false
+---
+
+# Modal Dropdown Viewport Safety
+
+- For dropdowns inside modal cards, keep dropdown options opening below the field.
+- Use a positioned field wrapper and a custom dropdown panel with:
+  - `position: absolute`
+  - `top: calc(100% + 6px)`
+  - `max-height` + `overflow-y: auto`
+  - explicit `z-index` above modal content
+- For modal sections containing dropdowns, use the same non-clipping card classes used by existing modal filter UIs:
+  - `class="auth-card modal-card mention-host-card filter-modal-card"`
+- Do not add flip-up behavior for modal dropdowns unless explicitly requested.
+- Avoid browser-native `datalist` for modal dropdowns when consistent placement and keyboard behavior are required.

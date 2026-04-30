@@ -1,0 +1,7 @@
+Settings Forms Consistency
+
+- Do not use native checkbox inputs in settings/admin forms.
+- Use the existing site toggle/switch UI pattern (`settings-toggle-row` + `settings-switch`) for all boolean settings.
+- For paired settings where one depends on another, hide or disable the dependent control when not applicable to avoid contradictory UX.
+- All settings text/number/url/email/password inputs must include visible labels.
+- Exception: the invite email quick-send input in Site Settings may remain unlabeled.

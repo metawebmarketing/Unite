@@ -78,8 +78,8 @@ function hasLinkPreviewContent(linkPreview: unknown): boolean {
   if (!linkPreview || typeof linkPreview !== "object") {
     return false;
   }
-  const preview = linkPreview as { title?: string; description?: string; host?: string; url?: string };
-  return Boolean(preview.title || preview.description || preview.host || preview.url);
+  const preview = linkPreview as { title?: string; description?: string; host?: string; url?: string; image_url?: string };
+  return Boolean(preview.title || preview.description || preview.host || preview.url || preview.image_url);
 }
 
 function openInAppBrowser(rawUrl: unknown) {
@@ -611,9 +611,20 @@ watch(
         class="link-preview clickable-post-card"
         @click.stop="openInAppBrowser(detail.post.link_preview?.url)"
       >
-        <strong>{{ detail.post.link_preview?.title }}</strong>
-        <p>{{ detail.post.link_preview?.description }}</p>
-        <small>{{ detail.post.link_preview?.host }}</small>
+        <img
+          v-if="detail.post.link_preview?.image_url"
+          :src="detail.post.link_preview?.image_url"
+          class="link-preview-image"
+          alt="Link preview"
+          loading="lazy"
+        />
+        <div class="link-preview-content">
+          <strong class="link-preview-title">{{ detail.post.link_preview?.title }}</strong>
+          <p v-if="detail.post.link_preview?.description" class="link-preview-description">
+            {{ detail.post.link_preview?.description }}
+          </p>
+          <small v-if="detail.post.link_preview?.host" class="link-preview-host">{{ detail.post.link_preview?.host }}</small>
+        </div>
       </div>
       <div class="post-actions">
         <button type="button" class="icon-action-button" @click.stop="onLike(detail.post)" title="Like" aria-label="Like">
@@ -732,9 +743,20 @@ watch(
           class="link-preview clickable-post-card"
           @click.stop="openInAppBrowser(reply.link_preview?.url)"
         >
-          <strong>{{ reply.link_preview?.title }}</strong>
-          <p>{{ reply.link_preview?.description }}</p>
-          <small>{{ reply.link_preview?.host }}</small>
+          <img
+            v-if="reply.link_preview?.image_url"
+            :src="reply.link_preview?.image_url"
+            class="link-preview-image"
+            alt="Link preview"
+            loading="lazy"
+          />
+          <div class="link-preview-content">
+            <strong class="link-preview-title">{{ reply.link_preview?.title }}</strong>
+            <p v-if="reply.link_preview?.description" class="link-preview-description">
+              {{ reply.link_preview?.description }}
+            </p>
+            <small v-if="reply.link_preview?.host" class="link-preview-host">{{ reply.link_preview?.host }}</small>
+          </div>
         </div>
         <div class="post-actions">
           <button type="button" class="icon-action-button" @click.stop="onLike(reply)" title="Like" aria-label="Like">

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from corsheaders.defaults import default_headers
 
@@ -146,6 +147,18 @@ UNITE_SUGGESTION_INTERVAL = 3
 UNITE_AD_INTERVAL = 0
 UNITE_MAX_INJECTION_RATIO = 0.5
 UNITE_FEED_CACHE_TTL_SECONDS = 30
+UNITE_FRONTEND_BASE_URL = "http://localhost:5173"
+UNITE_SITE_NAME = "Unite"
+UNITE_SUPPORT_EMAIL = "support@unite.local"
+DEFAULT_FROM_EMAIL = os.getenv("UNITE_DEFAULT_FROM_EMAIL", "noreply@unite.local")
+EMAIL_BACKEND = os.getenv("UNITE_EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("UNITE_EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.getenv("UNITE_EMAIL_PORT", "25"))
+EMAIL_HOST_USER = os.getenv("UNITE_EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("UNITE_EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = str(os.getenv("UNITE_EMAIL_USE_TLS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+EMAIL_USE_SSL = str(os.getenv("UNITE_EMAIL_USE_SSL", "false")).strip().lower() in {"1", "true", "yes", "on"}
+EMAIL_TIMEOUT = float(os.getenv("UNITE_EMAIL_TIMEOUT_SECONDS", "10"))
 
 CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_RESULT_BACKEND = "redis://localhost:6379/0"
@@ -199,3 +212,7 @@ UNITE_POST_IMAGE_MAX_WIDTH = 1280
 UNITE_POST_IMAGE_MAX_HEIGHT = 1280
 UNITE_POST_IMAGE_QUALITY = 80
 UNITE_ALLOW_LOCAL_DEMO_RESET = False
+UNITE_ENFORCE_SIGNUP_IP_COUNTRY_MATCH = True
+UNITE_ALLOW_SIGNUP_ON_IP_COUNTRY_LOOKUP_FAILURE = True
+UNITE_IP_COUNTRY_LOOKUP_TIMEOUT_SECONDS = 3.0
+UNITE_IP_COUNTRY_LOOKUP_URL_TEMPLATE = "http://ip-api.com/json/{ip}?fields=status,country"

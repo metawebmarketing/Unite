@@ -5,9 +5,11 @@ import { useRouter } from "vue-router";
 import { fetchInterestSuggestions, type InterestSuggestion } from "../api/interests";
 import { fetchProfile, updateProfile, uploadProfileImage } from "../api/profile";
 import { DEFAULT_INTEREST_SUGGESTIONS } from "../constants/interests";
+import { useAuthStore } from "../stores/auth";
 import { extractFirstHttpUrl } from "../utils/link-input";
 
 const router = useRouter();
+const authStore = useAuthStore();
 const profile = ref({
   user_id: 0,
   display_name: "",
@@ -22,6 +24,11 @@ const profile = ref({
   is_ai_account: false,
   ai_badge_enabled: false,
   profile_image_url: "",
+  date_of_birth: "",
+  gender: "",
+  gender_self_describe: "",
+  zip_code: "",
+  country: "",
 });
 const status = ref("idle");
 const isSavingProfile = ref(false);
@@ -295,6 +302,11 @@ onMounted(async () => {
     is_ai_account: data.is_ai_account,
     ai_badge_enabled: data.ai_badge_enabled,
     profile_image_url: data.profile_image_url,
+      date_of_birth: String(data.date_of_birth || ""),
+      gender: String(data.gender || ""),
+      gender_self_describe: String(data.gender_self_describe || ""),
+      zip_code: String(data.zip_code || ""),
+      country: String(data.country || ""),
   };
   interests.value = data.interests.map((item) => item.trim().toLowerCase()).filter(Boolean);
   const initialPayload = buildSavePayload();
@@ -382,6 +394,19 @@ export default {
         <button type="button" class="profile-view-profile-button" @click="viewPublicProfile">View Profile</button>
       </div>
       <p v-if="profile.is_ai_account && profile.ai_badge_enabled" class="ai-badge-row">AI account badge enabled</p>
+      <div v-if="authStore.isStaff" class="stack">
+        <label class="profile-section-heading">Admin-only demographics</label>
+        <input :value="profile.date_of_birth" placeholder="Date of birth" readonly />
+        <input :value="profile.gender" placeholder="Gender" readonly />
+        <input
+          v-if="profile.gender === 'self_describe' && profile.gender_self_describe"
+          :value="profile.gender_self_describe"
+          placeholder="Gender self describe"
+          readonly
+        />
+        <input :value="profile.zip_code" placeholder="ZIP / postal code" readonly />
+        <input :value="profile.country" placeholder="Country" readonly />
+      </div>
       <div class="stack">
         <input v-model="profile.display_name" placeholder="Display name" required />
         <div v-if="isFieldSaving('display_name')" class="field-saving-indicator"><span class="spinner" />Saving...</div>

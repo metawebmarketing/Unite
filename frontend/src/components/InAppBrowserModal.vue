@@ -18,6 +18,7 @@ const iframeSrc = ref("");
 const historyStack = ref<string[]>([]);
 const historyIndex = ref(0);
 const shareFeedback = ref("");
+const isFrameLoading = ref(false);
 let shareFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 function closeModal() {
@@ -74,6 +75,7 @@ function pushUrlToHistory(url: string) {
 }
 
 function onFrameLoad() {
+  isFrameLoading.value = false;
   const frameUrl = syncCurrentUrlFromFrame();
   if (frameUrl) {
     pushUrlToHistory(frameUrl);
@@ -88,8 +90,10 @@ function navigateBack() {
     return;
   }
   try {
-    history.back();
+    isFrameLoading.value = true;
+    frameWindow.history.back();
   } catch {
+    isFrameLoading.value = false;
     // Ignore cross-origin restrictions.
   }
 }
@@ -100,8 +104,10 @@ function navigateForward() {
     return;
   }
   try {
-    history.forward();
+    isFrameLoading.value = true;
+    frameWindow.history.forward();
   } catch {
+    isFrameLoading.value = false;
     // Ignore cross-origin restrictions.
   }
 }
@@ -112,8 +118,10 @@ function refreshFrame() {
     return;
   }
   try {
-    location.reload();
+    isFrameLoading.value = true;
+    frameWindow.location.reload();
   } catch {
+    isFrameLoading.value = false;
     // Ignore cross-origin restrictions.
   }
 }
@@ -177,6 +185,7 @@ watch(
       historyStack.value = initial ? [initial] : [];
       historyIndex.value = 0;
       iframeSrc.value = initial;
+      isFrameLoading.value = Boolean(initial);
       shareFeedback.value = "";
       iframeKey.value += 1;
     }
@@ -194,6 +203,7 @@ watch(
     historyStack.value = normalized ? [normalized] : [];
     historyIndex.value = 0;
     iframeSrc.value = normalized;
+    isFrameLoading.value = Boolean(normalized);
     shareFeedback.value = "";
     iframeKey.value += 1;
   },
@@ -217,14 +227,19 @@ onUnmounted(() => {
         <strong class="in-app-browser-url">{{ urlDisplayText }}</strong>
       </header>
 
-      <iframe
-        ref="iframeRef"
-        :key="`${iframeKey}-${iframeSrc}`"
-        :src="iframeSrc"
-        class="in-app-browser-frame"
-        title="Website viewer"
-        @load="onFrameLoad"
-      />
+      <div class="in-app-browser-frame-wrap">
+        <iframe
+          ref="iframeRef"
+          :key="`${iframeKey}-${iframeSrc}`"
+          :src="iframeSrc"
+          class="in-app-browser-frame"
+          title="Website viewer"
+          @load="onFrameLoad"
+        />
+        <div v-if="isFrameLoading" class="loading-overlay in-app-browser-loading-overlay" aria-live="polite">
+          <div class="spinner" />
+        </div>
+      </div>
 
       <footer class="in-app-browser-footer">
         <div class="in-app-browser-feedback-row">

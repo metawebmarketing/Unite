@@ -517,6 +517,248 @@ class PostsApiTests(APITestCase):
         self.assertEqual(second.status_code, 201)
         self.assertEqual(LinkPreviewCache.objects.filter(url=payload["link_url"]).count(), 1)
 
+    @override_settings(UNITE_ENABLE_REMOTE_LINK_FETCH=True)
+    @patch("apps.posts.services.urlopen")
+    def test_link_preview_includes_remote_og_image(self, mock_urlopen):
+        class _MockResponse:
+            def __init__(self, body: str):
+                self.headers = {"Content-Type": "text/html; charset=utf-8"}
+                self._body = body.encode("utf-8")
+
+            def read(self, *_args, **_kwargs):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        mock_urlopen.return_value = _MockResponse(
+            """
+            <html>
+              <head>
+                <title>Remote Preview Title</title>
+                <meta property="og:description" content="Remote preview description" />
+                <meta property="og:image" content="/assets/preview.png" />
+              </head>
+            </html>
+            """
+        )
+
+        user = User.objects.create_user(username="og_image_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="OgImageUser")
+        self.client.force_authenticate(user=user)
+        payload = {
+            "content": "Preview with image",
+            "link_url": "https://example.com/with-preview",
+        }
+        response = self.client.post("/api/v1/posts/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        preview = Post.objects.get(id=response.data["id"]).link_preview
+        self.assertEqual(preview.get("title"), "Remote Preview Title")
+        self.assertEqual(preview.get("description"), "Remote preview description")
+        self.assertEqual(preview.get("image_url"), "https://example.com/assets/preview.png")
+
+    @override_settings(UNITE_ENABLE_REMOTE_LINK_FETCH=True)
+    @patch("apps.posts.services.urlopen")
+    def test_link_preview_supports_twitter_image_src_tag(self, mock_urlopen):
+        class _MockResponse:
+            def __init__(self, body: str):
+                self.headers = {"Content-Type": "text/html; charset=utf-8"}
+                self._body = body.encode("utf-8")
+
+            def read(self, *_args, **_kwargs):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        mock_urlopen.return_value = _MockResponse(
+            """
+            <html>
+              <head>
+                <title>Twitter Image Tag</title>
+                <meta content="https://cdn.example.com/twitter-image.jpg" name="twitter:image:src" />
+              </head>
+            </html>
+            """
+        )
+
+        user = User.objects.create_user(username="twitter_image_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="TwitterImageUser")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Preview via twitter image tag",
+                "link_url": "https://example.com/twitter-image-tag",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        preview = Post.objects.get(id=response.data["id"]).link_preview
+        self.assertEqual(preview.get("image_url"), "https://cdn.example.com/twitter-image.jpg")
+
+    @override_settings(UNITE_ENABLE_REMOTE_LINK_FETCH=True)
+    @patch("apps.posts.services.urlopen")
+    def test_link_preview_supports_itemprop_image_tag(self, mock_urlopen):
+        class _MockResponse:
+            def __init__(self, body: str):
+                self.headers = {"Content-Type": "text/html; charset=utf-8"}
+                self._body = body.encode("utf-8")
+
+            def read(self, *_args, **_kwargs):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        mock_urlopen.return_value = _MockResponse(
+            """
+            <html>
+              <head>
+                <meta itemprop="image" content="/images/preview-itemprop.png" />
+              </head>
+            </html>
+            """
+        )
+
+        user = User.objects.create_user(username="itemprop_image_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="ItemPropImageUser")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Preview via itemprop image",
+                "link_url": "https://www.google.com",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        preview = Post.objects.get(id=response.data["id"]).link_preview
+        self.assertEqual(preview.get("image_url"), "https://www.google.com/images/preview-itemprop.png")
+
+    @override_settings(UNITE_ENABLE_REMOTE_LINK_FETCH=True)
+    @patch("apps.posts.services.urlopen")
+    def test_link_preview_uses_origin_page_image_when_search_page_has_no_image(self, mock_urlopen):
+        class _MockResponse:
+            def __init__(self, body: str):
+                self.headers = {"Content-Type": "text/html; charset=utf-8"}
+                self._body = body.encode("utf-8")
+
+            def read(self, *_args, **_kwargs):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def _urlopen_side_effect(request, timeout=3):
+            target_url = str(getattr(request, "full_url", request))
+            if target_url.startswith("https://www.google.com/search"):
+                return _MockResponse("<html><head><title>Google Search</title></head></html>")
+            if target_url == "https://www.google.com/":
+                return _MockResponse(
+                    """
+                    <html>
+                      <head>
+                        <meta itemprop="image" content="/images/branding/googleg/1x/googleg_standard_color_128dp.png" />
+                      </head>
+                    </html>
+                    """
+                )
+            raise Exception(f"unexpected url {target_url}")
+
+        mock_urlopen.side_effect = _urlopen_side_effect
+        user = User.objects.create_user(username="origin_image_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="OriginImageUser")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Search page with origin image fallback",
+                "link_url": "https://www.google.com/search?q=ai+new+onboarding+flow+53",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        preview = Post.objects.get(id=response.data["id"]).link_preview
+        self.assertEqual(
+            preview.get("image_url"),
+            "https://www.google.com/images/branding/googleg/1x/googleg_standard_color_128dp.png",
+        )
+
+    @override_settings(UNITE_ENABLE_REMOTE_LINK_FETCH=True)
+    @patch("apps.posts.services.urlopen")
+    def test_link_preview_supports_link_rel_icon_fallback(self, mock_urlopen):
+        class _MockResponse:
+            def __init__(self, body: str):
+                self.headers = {"Content-Type": "text/html; charset=utf-8"}
+                self._body = body.encode("utf-8")
+
+            def read(self, *_args, **_kwargs):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        mock_urlopen.return_value = _MockResponse(
+            """
+            <html>
+              <head>
+                <title>Icon Rel Page</title>
+                <link rel="icon" href="/favicon-test.ico" />
+              </head>
+            </html>
+            """
+        )
+
+        user = User.objects.create_user(username="rel_icon_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="RelIconUser")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Preview via rel icon",
+                "link_url": "https://example.com/icon-rel",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        preview = Post.objects.get(id=response.data["id"]).link_preview
+        self.assertEqual(preview.get("image_url"), "")
+
+    @override_settings(UNITE_ENABLE_REMOTE_LINK_FETCH=True)
+    @patch("apps.posts.services.urlopen")
+    def test_link_preview_uses_default_favicon_when_remote_fetch_fails(self, mock_urlopen):
+        mock_urlopen.side_effect = Exception("blocked")
+        user = User.objects.create_user(username="favicon_fallback_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="FaviconFallbackUser")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Preview fallback icon",
+                "link_url": "https://www.ecosia.org/search?q=science+incident+review+102",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        preview = Post.objects.get(id=response.data["id"]).link_preview
+        self.assertEqual(preview.get("image_url"), "")
+
     def test_report_action_creates_moderation_flag(self):
         reporter = User.objects.create_user(username="reporter", password="Password123!")
         Profile.objects.create(user=reporter, display_name="Reporter", location="global")

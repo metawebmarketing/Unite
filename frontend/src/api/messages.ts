@@ -38,6 +38,7 @@ export interface DMMessageRecord {
     host?: string;
     title?: string;
     description?: string;
+    image_url?: string;
   };
   created_at: string;
   status: "sent" | "read";
