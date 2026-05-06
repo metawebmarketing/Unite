@@ -87,6 +87,13 @@ export interface SiteSettingsPayload {
   allow_signup_on_ip_country_lookup_failure: boolean | null;
   ip_country_lookup_timeout_seconds: number | null;
   ip_country_lookup_url_template: string;
+  user_connection_limit: number | null;
+  post_reply_share_char_cap: number | null;
+  daily_post_reply_share_limit: number | null;
+  media_storage_mode: "local" | "s3";
+  media_public_base_url: string;
+  post_video_max_upload_bytes: number | null;
+  post_video_max_duration_seconds: number | null;
   updated_at: string;
 }
 

@@ -5,7 +5,7 @@ export interface CreatePostInput {
   link_url?: string;
   interest_tags?: string[];
   tagged_user_ids?: number[];
-  attachments?: Array<{ media_type: "image"; media_url: string }>;
+  attachments?: PostAttachment[];
 }
 
 export async function createPost(payload: CreatePostInput): Promise<unknown> {
@@ -20,12 +20,45 @@ export async function uploadPostImage(file: File): Promise<{ media_type: "image"
   return response.data;
 }
 
+export interface PostAttachment {
+  media_type: "image" | "video";
+  media_url: string;
+  thumbnail_url?: string;
+  hls_manifest_url?: string;
+  processing_status?: "processing" | "ready" | "failed";
+  media_bytes?: number;
+}
+
+export async function uploadPostVideo(
+  file: File,
+): Promise<{
+  media_type: "video";
+  media_url: string;
+  processing_status?: string;
+  thumbnail_url?: string;
+  hls_manifest_url?: string;
+  media_bytes?: number;
+}> {
+  const payload = new FormData();
+  payload.append("video", file);
+  const response = await apiClient.post<{
+    media_type: "video";
+    media_url: string;
+    processing_status?: string;
+    thumbnail_url?: string;
+    hls_manifest_url?: string;
+    media_bytes?: number;
+  }>("/posts/upload-video", payload);
+  return response.data;
+}
+
 export interface ReactPostInput {
   action: "like" | "reply" | "repost" | "quote" | "bookmark" | "report";
   content?: string;
   link_url?: string;
   tagged_user_ids?: number[];
-  attachments?: Array<{ media_type: "image"; media_url: string }>;
+  attachments?: PostAttachment[];
+  is_root_post?: boolean;
 }
 
 export interface PostAuthorSummary {
@@ -54,7 +87,7 @@ export interface PostRecord extends PostAuthorSummary {
     image_url?: string;
   };
   tagged_user_ids?: number[];
-  attachments?: Array<{ media_type: "image"; media_url: string }>;
+  attachments?: PostAttachment[];
   has_liked: boolean;
   has_bookmarked?: boolean;
   interaction_counts: {

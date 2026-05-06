@@ -6,6 +6,7 @@ import { useErrorModalStore } from "../stores/error-modal";
 import { useMessagesStore } from "../stores/messages";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
 import { extractFirstHttpUrl } from "../utils/link-input";
+import { navigateBack } from "../utils/navigation";
 
 const InAppBrowserModal = defineAsyncComponent(async () => {
   const componentModule = await import("../components/InAppBrowserModal.vue");
@@ -49,7 +50,7 @@ const activeThread = computed(() => messagesStore.threads.find((thread) => threa
 const messageCharCount = computed(() => messageDraft.value.length);
 
 function goBack() {
-  void router.push({ name: "messages" });
+  void navigateBack(router, { name: "messages" });
 }
 
 function addAttachmentDraft() {

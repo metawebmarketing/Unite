@@ -90,6 +90,10 @@ class ProfileActionScore(models.Model):
 
 
 class SiteSetting(models.Model):
+    class MediaStorageMode(models.TextChoices):
+        LOCAL = "local", "Local"
+        S3 = "s3", "S3"
+
     register_via_invite_only = models.BooleanField(default=False)
     allowed_signup_countries = models.JSONField(default=list, blank=True)
     site_name = models.CharField(max_length=120, blank=True, default="")
@@ -108,6 +112,18 @@ class SiteSetting(models.Model):
     allow_signup_on_ip_country_lookup_failure = models.BooleanField(null=True, blank=True)
     ip_country_lookup_timeout_seconds = models.FloatField(null=True, blank=True)
     ip_country_lookup_url_template = models.CharField(max_length=500, blank=True, default="")
+    user_connection_limit = models.PositiveIntegerField(null=True, blank=True)
+    post_reply_share_char_cap = models.PositiveIntegerField(null=True, blank=True)
+    daily_post_reply_share_limit = models.PositiveIntegerField(null=True, blank=True)
+    media_storage_mode = models.CharField(
+        max_length=16,
+        choices=MediaStorageMode.choices,
+        blank=True,
+        default="",
+    )
+    media_public_base_url = models.URLField(blank=True, default="")
+    post_video_max_upload_bytes = models.PositiveIntegerField(null=True, blank=True)
+    post_video_max_duration_seconds = models.PositiveIntegerField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:

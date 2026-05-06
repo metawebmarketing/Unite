@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import { fetchSiteSettings, sendSignupInvite, updateSiteSettings } from "../api/auth";
 import { COUNTRY_OPTIONS } from "../constants/countries";
 import { useErrorModalStore } from "../stores/error-modal";
+import { navigateBack } from "../utils/navigation";
 
 const router = useRouter();
 const errorModalStore = useErrorModalStore();
@@ -32,6 +33,13 @@ const settingsForm = reactive({
   allow_signup_on_ip_country_lookup_failure: true,
   ip_country_lookup_timeout_seconds: 3,
   ip_country_lookup_url_template: "",
+  user_connection_limit: 7500,
+  post_reply_share_char_cap: 500,
+  daily_post_reply_share_limit: 250,
+  media_storage_mode: "local" as "local" | "s3",
+  media_public_base_url: "",
+  post_video_max_upload_bytes: 1024 * 1024 * 1024,
+  post_video_max_duration_seconds: 300,
 });
 const allowedCountries = ref<string[]>([]);
 const countryInput = ref("");
@@ -46,7 +54,7 @@ const COUNTRY_AUTOSAVE_DELAY_MS = 400;
 const shouldShowLookupFailureBehavior = computed(() => settingsForm.enforce_signup_ip_country_match);
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 
 function showStatus(action: string, message: string, type: "success" | "error" | "info" = "info"): void {
@@ -218,6 +226,13 @@ async function loadSettings() {
     settingsForm.allow_signup_on_ip_country_lookup_failure = Boolean(payload.allow_signup_on_ip_country_lookup_failure);
     settingsForm.ip_country_lookup_timeout_seconds = Number(payload.ip_country_lookup_timeout_seconds || 3);
     settingsForm.ip_country_lookup_url_template = String(payload.ip_country_lookup_url_template || "");
+    settingsForm.user_connection_limit = Number(payload.user_connection_limit || 7500);
+    settingsForm.post_reply_share_char_cap = Number(payload.post_reply_share_char_cap || 500);
+    settingsForm.daily_post_reply_share_limit = Number(payload.daily_post_reply_share_limit || 250);
+    settingsForm.media_storage_mode = String(payload.media_storage_mode || "local").toLowerCase() === "s3" ? "s3" : "local";
+    settingsForm.media_public_base_url = String(payload.media_public_base_url || "");
+    settingsForm.post_video_max_upload_bytes = Number(payload.post_video_max_upload_bytes || 1024 * 1024 * 1024);
+    settingsForm.post_video_max_duration_seconds = Number(payload.post_video_max_duration_seconds || 300);
     const savedCountries = Array.isArray(payload.allowed_signup_countries)
       ? payload.allowed_signup_countries.map((item) => String(item).trim()).filter(Boolean)
       : [];
@@ -281,6 +296,13 @@ async function onSaveDeliverySettings() {
       allow_signup_on_ip_country_lookup_failure: boolean;
       ip_country_lookup_timeout_seconds: number;
       ip_country_lookup_url_template: string;
+      user_connection_limit: number;
+      post_reply_share_char_cap: number;
+      daily_post_reply_share_limit: number;
+      media_storage_mode: "local" | "s3";
+      media_public_base_url: string;
+      post_video_max_upload_bytes: number;
+      post_video_max_duration_seconds: number;
     }> = {
       site_name: settingsForm.site_name.trim(),
       support_email: settingsForm.support_email.trim(),
@@ -299,6 +321,13 @@ async function onSaveDeliverySettings() {
         : true,
       ip_country_lookup_timeout_seconds: Number(settingsForm.ip_country_lookup_timeout_seconds || 3),
       ip_country_lookup_url_template: settingsForm.ip_country_lookup_url_template.trim(),
+      user_connection_limit: Number(settingsForm.user_connection_limit || 7500),
+      post_reply_share_char_cap: Number(settingsForm.post_reply_share_char_cap || 500),
+      daily_post_reply_share_limit: Number(settingsForm.daily_post_reply_share_limit || 250),
+      media_storage_mode: settingsForm.media_storage_mode,
+      media_public_base_url: settingsForm.media_public_base_url.trim(),
+      post_video_max_upload_bytes: Number(settingsForm.post_video_max_upload_bytes || 1024 * 1024 * 1024),
+      post_video_max_duration_seconds: Number(settingsForm.post_video_max_duration_seconds || 300),
     };
     if (smtpPasswordInput.value.trim()) {
       payload.email_host_password = smtpPasswordInput.value.trim();
@@ -320,6 +349,13 @@ async function onSaveDeliverySettings() {
     settingsForm.allow_signup_on_ip_country_lookup_failure = Boolean(updated.allow_signup_on_ip_country_lookup_failure);
     settingsForm.ip_country_lookup_timeout_seconds = Number(updated.ip_country_lookup_timeout_seconds || 3);
     settingsForm.ip_country_lookup_url_template = String(updated.ip_country_lookup_url_template || "");
+    settingsForm.user_connection_limit = Number(updated.user_connection_limit || 7500);
+    settingsForm.post_reply_share_char_cap = Number(updated.post_reply_share_char_cap || 500);
+    settingsForm.daily_post_reply_share_limit = Number(updated.daily_post_reply_share_limit || 250);
+    settingsForm.media_storage_mode = String(updated.media_storage_mode || "local").toLowerCase() === "s3" ? "s3" : "local";
+    settingsForm.media_public_base_url = String(updated.media_public_base_url || "");
+    settingsForm.post_video_max_upload_bytes = Number(updated.post_video_max_upload_bytes || 1024 * 1024 * 1024);
+    settingsForm.post_video_max_duration_seconds = Number(updated.post_video_max_duration_seconds || 300);
     smtpPasswordInput.value = "";
     showStatus("Delivery and Runtime", "Delivery and runtime settings updated.", "success");
   } catch (error) {
@@ -406,6 +442,58 @@ onMounted(async () => {
           <input v-model="settingsForm.frontend_base_url" type="url" placeholder="Frontend base URL" />
           <label class="profile-section-heading admin-settings">Default From Email</label>
           <input v-model="settingsForm.default_from_email" type="email" placeholder="Default from email" />
+          <label class="profile-section-heading admin-settings">User Connection Limit</label>
+          <input
+            v-model.number="settingsForm.user_connection_limit"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Maximum connections per user"
+          />
+          <label class="profile-section-heading admin-settings">Post/Reply/Share Character Cap</label>
+          <input
+            v-model.number="settingsForm.post_reply_share_char_cap"
+            type="number"
+            min="1"
+            max="500"
+            step="1"
+            placeholder="Maximum characters for posts, replies, and shares"
+          />
+          <label class="profile-section-heading admin-settings">Daily Post/Reply/Share Limit</label>
+          <input
+            v-model.number="settingsForm.daily_post_reply_share_limit"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Maximum posts, replies, and shares per day"
+          />
+          <label class="profile-section-heading admin-settings">Media Storage Mode</label>
+          <select v-model="settingsForm.media_storage_mode">
+            <option value="local">Local (backend storage)</option>
+            <option value="s3">S3-compatible storage</option>
+          </select>
+          <label class="profile-section-heading admin-settings">Media Public Base URL</label>
+          <input
+            v-model="settingsForm.media_public_base_url"
+            type="url"
+            placeholder="Optional CDN/media base URL"
+          />
+          <label class="profile-section-heading admin-settings">Post Video Max Upload Bytes</label>
+          <input
+            v-model.number="settingsForm.post_video_max_upload_bytes"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Maximum uploaded video size in bytes"
+          />
+          <label class="profile-section-heading admin-settings">Post Video Max Duration Seconds</label>
+          <input
+            v-model.number="settingsForm.post_video_max_duration_seconds"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Maximum uploaded video length in seconds"
+          />
           <h3>SMTP Settings</h3>
           <label class="profile-section-heading admin-settings">Email Backend</label>
           <input

@@ -192,9 +192,10 @@ def derive_origin_url(page_url: str) -> str:
 
 
 def validate_media_url(media_url: str, media_type: str) -> bool:
-    lower = media_url.lower()
+    parsed = urlparse(str(media_url or "").strip())
+    lower = str(parsed.path or "").lower()
     image_ext = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-    video_ext = (".mp4", ".webm", ".mov")
+    video_ext = (".mp4", ".webm", ".mov", ".m3u8")
     if media_type == "image":
         return lower.endswith(image_ext)
     if media_type == "video":

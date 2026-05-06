@@ -23,6 +23,7 @@ from apps.posts.idempotency import (
     save_idempotent_response,
 )
 from apps.posts.services import build_link_preview
+from apps.posts.storage import resolve_public_media_url
 
 User = get_user_model()
 
@@ -91,7 +92,7 @@ def serialize_thread_item(
     )
     profile_image_url = ""
     if other_profile and getattr(other_profile, "profile_image", None):
-        profile_image_url = request.build_absolute_uri(other_profile.profile_image.url)
+        profile_image_url = resolve_public_media_url(other_profile.profile_image.url, request)
     display_name = ""
     username = ""
     if other_profile:
@@ -278,7 +279,7 @@ class DMUserSuggestionView(APIView):
             display_name = (profile.display_name or username).strip()
             if query and query not in username.lower() and query not in display_name.lower():
                 continue
-            profile_image_url = request.build_absolute_uri(profile.profile_image.url) if profile.profile_image else ""
+            profile_image_url = resolve_public_media_url(profile.profile_image.url, request) if profile.profile_image else ""
             rank_score = float(getattr(profile, "rank_overall_score", 0.0) or 0.0)
             is_connected = profile.user_id in connected_user_ids
             items.append(
@@ -347,7 +348,7 @@ class DMThreadUserSuggestionView(APIView):
             display_name = (profile.display_name or username).strip()
             if query not in username.lower() and query not in display_name.lower():
                 continue
-            profile_image_url = request.build_absolute_uri(profile.profile_image.url) if profile.profile_image else ""
+            profile_image_url = resolve_public_media_url(profile.profile_image.url, request) if profile.profile_image else ""
             items.append(
                 {
                     "user_id": profile.user_id,

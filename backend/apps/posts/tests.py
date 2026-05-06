@@ -11,7 +11,7 @@ from rest_framework.test import APITestCase
 from unittest.mock import patch
 from PIL import Image
 
-from apps.accounts.models import Profile, ProfileActionScore
+from apps.accounts.models import Profile, ProfileActionScore, SiteSetting
 from apps.ai_accounts.models import AiAccountProfile
 from apps.connections.models import Connection
 from apps.feed.sentiment_providers import SentimentResult
@@ -23,14 +23,48 @@ from apps.posts.models import (
     Post,
     PostInteraction,
     SyncReplayEvent,
+    UploadedMediaAsset,
 )
-from apps.posts.tasks import cleanup_expired_post_caches
+from apps.posts.tasks import cleanup_expired_post_caches, process_uploaded_video, repair_missing_video_thumbnail
 from apps.posts.views import PostListCreateView
+from apps.posts.serializers import PostSerializer
 
 User = get_user_model()
 
 
 class PostsApiTests(APITestCase):
+    def test_post_serializer_limits_non_parent_posts_to_single_attachment(self):
+        user = User.objects.create_user(username="non_parent_limit_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="Non Parent Limit")
+        self.client.force_authenticate(user=user)
+        request = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "reply-like payload",
+                "parent_post_id": 123,
+                "attachments": [
+                    {"media_type": "image", "media_url": "https://cdn.example.com/a.jpg"},
+                    {"media_type": "image", "media_url": "https://cdn.example.com/b.jpg"},
+                ],
+            },
+            format="json",
+        ).wsgi_request
+        request.user = user
+        serializer = PostSerializer(
+            data={
+                "content": "reply-like payload",
+                "attachments": [
+                    {"media_type": "image", "media_url": "https://cdn.example.com/a.jpg"},
+                    {"media_type": "image", "media_url": "https://cdn.example.com/b.jpg"},
+                ],
+                "parent_post_id": 123,
+            },
+            context={"request": request},
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("attachments", serializer.errors)
+        self.assertIn("only one media attachment", str(serializer.errors["attachments"][0]).lower())
+
     @patch("apps.accounts.ranking.score_sentiment_text")
     def test_create_post_marks_rescore_when_sentiment_provider_unavailable(self, mock_score_sentiment_text):
         mock_score_sentiment_text.return_value = SentimentResult(
@@ -345,6 +379,46 @@ class PostsApiTests(APITestCase):
         second = self.client.post("/api/v1/posts/", payload, format="json")
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 429)
+
+    def test_post_create_respects_runtime_character_cap(self):
+        settings_obj = SiteSetting.get_solo()
+        settings_obj.post_reply_share_char_cap = 10
+        settings_obj.save(update_fields=["post_reply_share_char_cap", "updated_at"])
+        user = User.objects.create_user(username="char_cap_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="CharCapUser")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {"content": "12345678901", "interest_tags": ["tech"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot exceed 10 characters", str(response.data.get("content", [""])[0]))
+
+    def test_daily_post_reply_share_limit_blocks_additional_actions(self):
+        settings_obj = SiteSetting.get_solo()
+        settings_obj.daily_post_reply_share_limit = 1
+        settings_obj.save(update_fields=["daily_post_reply_share_limit", "updated_at"])
+        actor = User.objects.create_user(username="daily_limit_actor", password="Password123!")
+        author = User.objects.create_user(username="daily_limit_author", password="Password123!")
+        Profile.objects.create(user=actor, display_name="DailyLimitActor")
+        Profile.objects.create(user=author, display_name="DailyLimitAuthor")
+        target_post = Post.objects.create(author=author, content="Target for daily limit")
+        self.client.force_authenticate(user=actor)
+
+        first = self.client.post(
+            "/api/v1/posts/",
+            {"content": "first action", "interest_tags": ["tech"]},
+            format="json",
+        )
+        second = self.client.post(
+            f"/api/v1/posts/{target_post.id}/react",
+            {"action": "reply", "content": "second action should fail"},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 429)
+        self.assertIn("Daily post/reply/share limit reached", str(second.data.get("detail", "")))
 
     @override_settings(UNITE_SPAM_BURST_WINDOW_SECONDS=300, UNITE_SPAM_BURST_MAX_POSTS=2)
     def test_burst_posting_limit_blocks_after_threshold(self):
@@ -974,3 +1048,252 @@ class PostsApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         reply_ids = {int(item["id"]) for item in response.data["replies"]}
         self.assertNotIn(blocked_reply.id, reply_ids)
+
+    @patch("apps.posts.views.process_uploaded_video.delay")
+    @patch("apps.posts.views.probe_video_duration_seconds", return_value=10.0)
+    def test_upload_video_queues_processing(self, _mock_duration, mock_delay):
+        user = User.objects.create_user(username="video_uploader", password="Password123!")
+        Profile.objects.create(user=user, display_name="Video Uploader")
+        self.client.force_authenticate(user=user)
+        uploaded = SimpleUploadedFile("clip.mp4", b"\x00" * 1024, content_type="video/mp4")
+        response = self.client.post("/api/v1/posts/upload-video", {"video": uploaded}, format="multipart")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["media_type"], "video")
+        self.assertEqual(response.data["processing_status"], "processing")
+        self.assertTrue(str(response.data["media_url"]).endswith(".mp4"))
+        self.assertTrue(str(response.data["thumbnail_url"]).endswith(".jpg"))
+        mock_delay.assert_called_once()
+
+    @patch("apps.posts.views.probe_video_duration_seconds", return_value=10.0)
+    def test_upload_video_rejects_oversized_file(self, _mock_duration):
+        user = User.objects.create_user(username="video_size_limit", password="Password123!")
+        Profile.objects.create(user=user, display_name="Video Size Limit")
+        settings_obj = SiteSetting.get_solo()
+        settings_obj.post_video_max_upload_bytes = 128
+        settings_obj.save(update_fields=["post_video_max_upload_bytes", "updated_at"])
+        self.client.force_authenticate(user=user)
+        uploaded = SimpleUploadedFile("clip.mp4", b"\x00" * 256, content_type="video/mp4")
+        response = self.client.post("/api/v1/posts/upload-video", {"video": uploaded}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("maximum upload size", str(response.data.get("detail", "")).lower())
+
+    @patch("apps.posts.views.probe_video_duration_seconds", return_value=301.0)
+    def test_upload_video_rejects_duration_over_limit(self, _mock_duration):
+        user = User.objects.create_user(username="video_duration_limit", password="Password123!")
+        Profile.objects.create(user=user, display_name="Video Duration Limit")
+        settings_obj = SiteSetting.get_solo()
+        settings_obj.post_video_max_duration_seconds = 300
+        settings_obj.save(update_fields=["post_video_max_duration_seconds", "updated_at"])
+        self.client.force_authenticate(user=user)
+        uploaded = SimpleUploadedFile("clip.mp4", b"\x00" * 256, content_type="video/mp4")
+        response = self.client.post("/api/v1/posts/upload-video", {"video": uploaded}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("maximum duration", str(response.data.get("detail", "")).lower())
+
+    def test_create_post_accepts_video_attachment(self):
+        user = User.objects.create_user(username="video_post_author", password="Password123!")
+        Profile.objects.create(user=user, display_name="Video Post Author")
+        media_url = "https://cdn.example.com/video.mp4"
+        UploadedMediaAsset.objects.create(
+            user=user,
+            media_type=MediaAttachment.MediaType.VIDEO,
+            media_url=media_url,
+            media_bytes=128,
+            processing_status=UploadedMediaAsset.ProcessingStatus.PROCESSING,
+            thumbnail_url="https://cdn.example.com/video.jpg",
+            hls_manifest_url="https://cdn.example.com/video.m3u8",
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Video post",
+                "attachments": [{"media_type": "video", "media_url": media_url}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        post = Post.objects.get(id=response.data["id"])
+        attachment = MediaAttachment.objects.filter(post=post).first()
+        self.assertIsNotNone(attachment)
+        self.assertEqual(attachment.media_type, "video")
+        self.assertEqual(attachment.processing_status, UploadedMediaAsset.ProcessingStatus.PROCESSING)
+        self.assertTrue(str(attachment.thumbnail_url).endswith(".jpg"))
+
+    def test_create_post_rejects_more_than_twenty_attachments(self):
+        user = User.objects.create_user(username="too_many_media", password="Password123!")
+        Profile.objects.create(user=user, display_name="TooManyMedia")
+        self.client.force_authenticate(user=user)
+        attachments = [
+            {"media_type": "image", "media_url": f"https://cdn.example.com/image-{index}.png"}
+            for index in range(21)
+        ]
+        response = self.client.post(
+            "/api/v1/posts/",
+            {"content": "Too many", "attachments": attachments},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("up to 20", str(response.data.get("attachments", [""])[0]).lower())
+
+    def test_create_post_rejects_cumulative_video_bytes_over_limit(self):
+        user = User.objects.create_user(username="video_bytes_limit", password="Password123!")
+        Profile.objects.create(user=user, display_name="VideoBytesLimit")
+        settings_obj = SiteSetting.get_solo()
+        settings_obj.post_video_max_upload_bytes = 100
+        settings_obj.save(update_fields=["post_video_max_upload_bytes", "updated_at"])
+        urls = [
+            "https://cdn.example.com/video-1.mp4",
+            "https://cdn.example.com/video-2.mp4",
+        ]
+        for url in urls:
+            UploadedMediaAsset.objects.create(
+                user=user,
+                media_type=MediaAttachment.MediaType.VIDEO,
+                media_url=url,
+                media_bytes=60,
+                processing_status=UploadedMediaAsset.ProcessingStatus.PROCESSING,
+            )
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Two large videos",
+                "attachments": [{"media_type": "video", "media_url": url} for url in urls],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("total video upload size", str(response.data.get("attachments", [""])[0]).lower())
+
+    def test_reply_accepts_video_attachment(self):
+        replier = User.objects.create_user(username="video_reply_user", password="Password123!")
+        author = User.objects.create_user(username="video_reply_author", password="Password123!")
+        Profile.objects.create(user=replier, display_name="Video Reply User")
+        Profile.objects.create(user=author, display_name="Video Reply Author")
+        target_post = Post.objects.create(author=author, content="target")
+        UploadedMediaAsset.objects.create(
+            user=replier,
+            media_type=MediaAttachment.MediaType.VIDEO,
+            media_url="https://cdn.example.com/reply-video.mp4",
+            thumbnail_url="https://cdn.example.com/reply-video.jpg",
+            hls_manifest_url="https://cdn.example.com/reply-video.m3u8",
+            processing_status=UploadedMediaAsset.ProcessingStatus.PROCESSING,
+            media_bytes=1234,
+        )
+        self.client.force_authenticate(user=replier)
+        response = self.client.post(
+            f"/api/v1/posts/{target_post.id}/react",
+            {
+                "action": "reply",
+                "content": "Reply with video",
+                "attachments": [{"media_type": "video", "media_url": "https://cdn.example.com/reply-video.mp4"}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        reply_post = Post.objects.filter(parent_post=target_post, author=replier).order_by("-id").first()
+        self.assertIsNotNone(reply_post)
+        attachment = MediaAttachment.objects.filter(post=reply_post, media_type="video").first()
+        self.assertIsNotNone(attachment)
+        self.assertEqual(attachment.thumbnail_url, "https://cdn.example.com/reply-video.jpg")
+        self.assertEqual(attachment.hls_manifest_url, "https://cdn.example.com/reply-video.m3u8")
+        self.assertEqual(attachment.processing_status, UploadedMediaAsset.ProcessingStatus.PROCESSING)
+        self.assertEqual(attachment.media_bytes, 1234)
+
+    def test_daily_limit_blocks_video_quote_action(self):
+        user = User.objects.create_user(username="video_quote_limit", password="Password123!")
+        author = User.objects.create_user(username="video_quote_author", password="Password123!")
+        Profile.objects.create(user=user, display_name="Video Quote Limit")
+        Profile.objects.create(user=author, display_name="Video Quote Author")
+        target = Post.objects.create(author=author, content="Target")
+        settings_obj = SiteSetting.get_solo()
+        settings_obj.daily_post_reply_share_limit = 1
+        settings_obj.save(update_fields=["daily_post_reply_share_limit", "updated_at"])
+        Post.objects.create(author=user, content="Consumes daily limit")
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            f"/api/v1/posts/{target.id}/react",
+            {
+                "action": "quote",
+                "content": "quote with video",
+                "attachments": [{"media_type": "video", "media_url": "https://cdn.example.com/clip.mp4"}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.data.get("limit_scope"), "daily_post_reply_share")
+
+
+class PostVideoTaskTests(APITestCase):
+    def test_process_uploaded_video_returns_error_when_transcode_fails(self):
+        saved_name = default_storage.save("posts/test-video.mp4", SimpleUploadedFile("test.mp4", b"raw"))
+        with patch("apps.posts.tasks.transcode_video_to_mp4", side_effect=RuntimeError("ffmpeg failed")):
+            payload = process_uploaded_video(
+                saved_name,
+                "posts/test-video.jpg",
+                "posts/test-video.m3u8",
+                storage_mode="local",
+            )
+        self.assertEqual(payload.get("status"), "error")
+
+    def test_process_uploaded_video_persists_optimized_video_and_thumbnail(self):
+        saved_name = default_storage.save("posts/test-video-ok.mp4", SimpleUploadedFile("test.mp4", b"raw-input"))
+        thumbnail_name = "posts/test-video-ok.jpg"
+        manifest_name = "posts/test-video-ok.m3u8"
+
+        def fake_transcode(_input_path: str, output_path: str):
+            with open(output_path, "wb") as handle:
+                handle.write(b"optimized-output")
+
+        def fake_thumbnail(_input_path: str, output_path: str):
+            with open(output_path, "wb") as handle:
+                handle.write(b"thumb")
+
+        def fake_hls(_input_path: str, output_manifest_path: str, output_segments_dir: str):
+            import os
+
+            os.makedirs(output_segments_dir, exist_ok=True)
+            with open(output_manifest_path, "wb") as handle:
+                handle.write(b"#EXTM3U\n")
+            with open(f"{output_segments_dir}/segment-000.ts", "wb") as handle:
+                handle.write(b"segment")
+
+        with patch("apps.posts.tasks.transcode_video_to_mp4", side_effect=fake_transcode):
+            with patch("apps.posts.tasks.generate_video_thumbnail", side_effect=fake_thumbnail):
+                with patch("apps.posts.tasks.transcode_video_to_hls", side_effect=fake_hls):
+                    payload = process_uploaded_video(saved_name, thumbnail_name, manifest_name, storage_mode="local")
+
+        self.assertEqual(payload.get("status"), "ok")
+        self.assertTrue(default_storage.exists(saved_name))
+        self.assertTrue(default_storage.exists(thumbnail_name))
+        self.assertTrue(default_storage.exists(manifest_name))
+
+    def test_repair_missing_video_thumbnail_generates_and_persists_thumbnail(self):
+        saved_name = default_storage.save("posts/repair-source.mp4", SimpleUploadedFile("repair.mp4", b"video-bytes"))
+        media_url = default_storage.url(saved_name)
+        asset = UploadedMediaAsset.objects.create(
+            user=User.objects.create_user(username="repair_thumb_user", password="Password123!"),
+            media_type=MediaAttachment.MediaType.VIDEO,
+            media_url=media_url,
+            storage_mode="local",
+            storage_saved_name=saved_name,
+            processing_status=UploadedMediaAsset.ProcessingStatus.READY,
+        )
+        post = Post.objects.create(author=asset.user, content="Repair thumb post")
+        attachment = MediaAttachment.objects.create(post=post, media_type="video", media_url=media_url)
+
+        def fake_thumbnail(_input_path: str, output_path: str):
+            with open(output_path, "wb") as handle:
+                handle.write(b"thumb-bytes")
+
+        with patch("apps.posts.tasks.generate_video_thumbnail", side_effect=fake_thumbnail):
+            payload = repair_missing_video_thumbnail(media_url=media_url, uploaded_asset_id=asset.id)
+
+        self.assertEqual(payload.get("status"), "ok")
+        asset.refresh_from_db()
+        attachment.refresh_from_db()
+        self.assertTrue(str(asset.thumbnail_saved_name).endswith(".jpg"))
+        self.assertTrue(default_storage.exists(asset.thumbnail_saved_name))
+        self.assertTrue(str(asset.thumbnail_url).endswith(".jpg"))
+        self.assertEqual(attachment.thumbnail_url, asset.thumbnail_url)

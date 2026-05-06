@@ -10,6 +10,7 @@ import {
   type PolicyResolveResponse,
 } from "../api/policy";
 import { useErrorModalStore } from "../stores/error-modal";
+import { navigateBack } from "../utils/navigation";
 
 const router = useRouter();
 const errorModalStore = useErrorModalStore();
@@ -27,7 +28,7 @@ const form = reactive({
 });
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 
 async function loadPacks() {

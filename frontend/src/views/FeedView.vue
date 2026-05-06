@@ -16,6 +16,8 @@ import {
   fetchSyncMetrics,
   togglePostPin,
   uploadPostImage,
+  uploadPostVideo,
+  type PostAttachment,
   type PostRecord,
   type SyncMetrics,
 } from "../api/posts";
@@ -32,6 +34,11 @@ import MentionTextContent from "../components/MentionTextContent.vue";
 import { extractFirstHttpUrl } from "../utils/link-input";
 import ComposeView from "./ComposeView.vue";
 import ThemeStudioView from "./ThemeStudioView.vue";
+
+const PostMediaCarousel = defineAsyncComponent(async () => {
+  const componentModule = await import("../components/PostMediaCarousel.vue");
+  return (componentModule as { default?: unknown }).default || componentModule;
+});
 
 const InAppBrowserModal = defineAsyncComponent(async () => {
   const componentModule = await import("../components/InAppBrowserModal.vue");
@@ -79,23 +86,110 @@ const replyDraft = ref("");
 const replyLinkDraft = ref("");
 const replyTargetPostId = ref<number | null>(null);
 const replyAttachmentInputRef = ref<HTMLInputElement | null>(null);
-const replyAttachments = ref<Array<{ media_type: "image"; media_url: string }>>([]);
-const isReplyUploadingImage = ref(false);
+const replyAttachments = ref<PostAttachment[]>([]);
+const isReplyUploadingMedia = ref(false);
 const replyTaggedUserIds = ref<number[]>([]);
 const shareDraft = ref("");
 const shareLinkDraft = ref("");
 const shareTargetPostId = ref<number | null>(null);
 const shareAttachmentInputRef = ref<HTMLInputElement | null>(null);
-const shareAttachments = ref<Array<{ media_type: "image"; media_url: string }>>([]);
-const isShareUploadingImage = ref(false);
+const shareAttachments = ref<PostAttachment[]>([]);
+const isShareUploadingMedia = ref(false);
 const shareTaggedUserIds = ref<number[]>([]);
+const generatedVideoPosterByUrl = ref<Record<string, string>>({});
 const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_VIDEO_UPLOAD_BYTES = 1024 * 1024 * 1024;
+function resolveApiErrorMessage(error: unknown, fallback: string): string {
+  const detail = String((error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "").trim();
+  return detail || fallback;
+}
+
+async function generatePosterFromVideoUrl(videoUrl: string): Promise<string> {
+  return await new Promise((resolve) => {
+    let hasResolved = false;
+    const sourceVideo = document.createElement("video");
+    sourceVideo.preload = "metadata";
+    sourceVideo.muted = true;
+    sourceVideo.playsInline = true;
+    sourceVideo.src = videoUrl;
+    const resolveOnce = (value: string) => {
+      if (hasResolved) {
+        return;
+      }
+      hasResolved = true;
+      resolve(value);
+    };
+    const captureFrame = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = sourceVideo.videoWidth || 640;
+        canvas.height = sourceVideo.videoHeight || 360;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          resolveOnce("");
+          return;
+        }
+        context.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+        resolveOnce(canvas.toDataURL("image/jpeg", 0.82));
+      } catch {
+        resolveOnce("");
+      }
+    };
+    sourceVideo.onloadedmetadata = () => {
+      const duration = Number(sourceVideo.duration || 0);
+      const seekTargetSeconds = Number.isFinite(duration) && duration > 0 ? Math.min(1, Math.max(0.15, duration / 4)) : 0.15;
+      try {
+        sourceVideo.currentTime = seekTargetSeconds;
+      } catch {
+        captureFrame();
+      }
+    };
+    sourceVideo.onseeked = captureFrame;
+    sourceVideo.onloadeddata = captureFrame;
+    sourceVideo.onerror = () => resolveOnce("");
+    window.setTimeout(() => resolveOnce(""), 4000);
+  });
+}
+
+async function ensurePosterForVideoAttachment(attachment: PostAttachment) {
+  if (attachment.media_type !== "video") {
+    return;
+  }
+  if (String(attachment.thumbnail_url || "").trim()) {
+    return;
+  }
+  const mediaUrl = String(attachment.media_url || "").trim();
+  if (!mediaUrl || generatedVideoPosterByUrl.value[mediaUrl]) {
+    return;
+  }
+  const generatedPoster = await generatePosterFromVideoUrl(mediaUrl);
+  if (!generatedPoster) {
+    return;
+  }
+  generatedVideoPosterByUrl.value = {
+    ...generatedVideoPosterByUrl.value,
+    [mediaUrl]: generatedPoster,
+  };
+}
+
+function resolveVideoPoster(attachment: PostAttachment): string | undefined {
+  const explicitPoster = String(attachment.thumbnail_url || "").trim();
+  if (explicitPoster) {
+    return explicitPoster;
+  }
+  const mediaUrl = String(attachment.media_url || "").trim();
+  if (!mediaUrl) {
+    return undefined;
+  }
+  return generatedVideoPosterByUrl.value[mediaUrl] || undefined;
+}
 const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
 const showInAppBrowser = ref(false);
 const inAppBrowserUrl = ref("");
 const feedOrdering = ref<"default" | "date_cluster">("default");
 const notificationUnreadCount = computed(() => Math.max(0, Number(notificationsStore.unreadCount || 0)));
+let processingMediaRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 onMounted(async () => {
   notificationsStore.ensureRealtimeConnection();
@@ -196,6 +290,10 @@ onUnmounted(() => {
   }
   if (scrollHandler) {
     window.removeEventListener("scroll", scrollHandler);
+  }
+  if (processingMediaRefreshTimer) {
+    clearInterval(processingMediaRefreshTimer);
+    processingMediaRefreshTimer = null;
   }
   document.body.style.overflow = "";
 });
@@ -332,19 +430,39 @@ function openInAppBrowser(rawUrl: unknown) {
   showInAppBrowser.value = true;
 }
 
-function getPostAttachments(value: unknown): Array<{ media_type: "image"; media_url: string }> {
+function getPostAttachments(value: unknown): PostAttachment[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value
-    .map((item) => ({
-      media_type: String((item as { media_type?: string }).media_type || "").trim().toLowerCase(),
-      media_url: String((item as { media_url?: string }).media_url || "").trim(),
-    }))
-    .filter(
-      (item): item is { media_type: "image"; media_url: string } =>
-        Boolean(item.media_url) && item.media_type === "image",
-    );
+  const attachments: PostAttachment[] = [];
+  for (const item of value) {
+    const normalizedMediaType = String((item as { media_type?: string }).media_type || "").trim().toLowerCase();
+    if (normalizedMediaType !== "image" && normalizedMediaType !== "video") {
+      continue;
+    }
+    const mediaUrl = String((item as { media_url?: string }).media_url || "").trim();
+    if (!mediaUrl) {
+      continue;
+    }
+    const normalizedProcessingStatus = String((item as { processing_status?: string }).processing_status || "")
+      .trim()
+      .toLowerCase();
+    const processingStatus =
+      normalizedProcessingStatus === "processing" ||
+      normalizedProcessingStatus === "ready" ||
+      normalizedProcessingStatus === "failed"
+        ? normalizedProcessingStatus
+        : undefined;
+    attachments.push({
+      media_type: normalizedMediaType,
+      media_url: mediaUrl,
+      thumbnail_url: String((item as { thumbnail_url?: string }).thumbnail_url || "").trim(),
+      hls_manifest_url: String((item as { hls_manifest_url?: string }).hls_manifest_url || "").trim(),
+      processing_status: processingStatus,
+      media_bytes: Number((item as { media_bytes?: number }).media_bytes || 0),
+    });
+  }
+  return attachments;
 }
 
 function resolveTaggedUserIds(value: unknown): number[] {
@@ -360,7 +478,7 @@ function resetReplyComposerState() {
   replyDraft.value = "";
   replyLinkDraft.value = "";
   replyAttachments.value = [];
-  isReplyUploadingImage.value = false;
+  isReplyUploadingMedia.value = false;
   replyTaggedUserIds.value = [];
 }
 
@@ -368,7 +486,7 @@ function resetShareComposerState() {
   shareDraft.value = "";
   shareLinkDraft.value = "";
   shareAttachments.value = [];
-  isShareUploadingImage.value = false;
+  isShareUploadingMedia.value = false;
   shareTaggedUserIds.value = [];
 }
 
@@ -387,13 +505,13 @@ async function onReplyImageSelected(event: Event) {
     return;
   }
   if (!navigator.onLine) {
-    errorModalStore.showError("Image upload requires an online connection.");
+    errorModalStore.showError("Media upload requires an online connection.");
     if (input) {
       input.value = "";
     }
     return;
   }
-  isReplyUploadingImage.value = true;
+  isReplyUploadingMedia.value = true;
   try {
     const file = files[0];
     if (file && String(file.type || "").toLowerCase().startsWith("image/")) {
@@ -403,11 +521,26 @@ async function onReplyImageSelected(event: Event) {
       }
       const uploaded = await uploadPostImage(file);
       replyAttachments.value = [uploaded];
+      return;
     }
-  } catch {
-    errorModalStore.showError("Unable to upload image. Please retry.");
+    if (file && String(file.type || "").toLowerCase().startsWith("video/")) {
+      if (Number(file.size || 0) > MAX_VIDEO_UPLOAD_BYTES) {
+        errorModalStore.showError("Video is too large. Maximum size is 1 GB.");
+        return;
+      }
+      const uploaded = await uploadPostVideo(file);
+      replyAttachments.value = [{
+        media_type: "video",
+        media_url: uploaded.media_url,
+        thumbnail_url: uploaded.thumbnail_url || "",
+      }];
+      return;
+    }
+    errorModalStore.showError("Unsupported file type. Use an image or video.");
+  } catch (error) {
+    errorModalStore.showError(resolveApiErrorMessage(error, "Unable to upload media. Please retry."));
   } finally {
-    isReplyUploadingImage.value = false;
+    isReplyUploadingMedia.value = false;
     if (input) {
       input.value = "";
     }
@@ -421,13 +554,13 @@ async function onShareImageSelected(event: Event) {
     return;
   }
   if (!navigator.onLine) {
-    errorModalStore.showError("Image upload requires an online connection.");
+    errorModalStore.showError("Media upload requires an online connection.");
     if (input) {
       input.value = "";
     }
     return;
   }
-  isShareUploadingImage.value = true;
+  isShareUploadingMedia.value = true;
   try {
     const file = files[0];
     if (file && String(file.type || "").toLowerCase().startsWith("image/")) {
@@ -437,11 +570,26 @@ async function onShareImageSelected(event: Event) {
       }
       const uploaded = await uploadPostImage(file);
       shareAttachments.value = [uploaded];
+      return;
     }
-  } catch {
-    errorModalStore.showError("Unable to upload image. Please retry.");
+    if (file && String(file.type || "").toLowerCase().startsWith("video/")) {
+      if (Number(file.size || 0) > MAX_VIDEO_UPLOAD_BYTES) {
+        errorModalStore.showError("Video is too large. Maximum size is 1 GB.");
+        return;
+      }
+      const uploaded = await uploadPostVideo(file);
+      shareAttachments.value = [{
+        media_type: "video",
+        media_url: uploaded.media_url,
+        thumbnail_url: uploaded.thumbnail_url || "",
+      }];
+      return;
+    }
+    errorModalStore.showError("Unsupported file type. Use an image or video.");
+  } catch (error) {
+    errorModalStore.showError(resolveApiErrorMessage(error, "Unable to upload media. Please retry."));
   } finally {
-    isShareUploadingImage.value = false;
+    isShareUploadingMedia.value = false;
     if (input) {
       input.value = "";
     }
@@ -510,7 +658,7 @@ async function onBookmark(postId: number) {
 async function submitReplyModal() {
   const postId = replyTargetPostId.value;
   const draft = replyDraft.value.trim();
-  if (!postId || !draft || isReplyUploadingImage.value) {
+  if (!postId || !draft || isReplyUploadingMedia.value) {
     return;
   }
   if (replyAttachments.value.length && !navigator.onLine) {
@@ -528,7 +676,7 @@ async function submitReplyModal() {
 
 async function submitShareModal() {
   const postId = shareTargetPostId.value;
-  if (!postId || isShareUploadingImage.value) {
+  if (!postId || isShareUploadingMedia.value) {
     return;
   }
   if (shareAttachments.value.length && !navigator.onLine) {
@@ -943,6 +1091,16 @@ watch(
   { immediate: true },
 );
 
+watch(
+  [replyAttachments, shareAttachments],
+  ([replyList, shareList]) => {
+    for (const attachment of [...replyList, ...shareList]) {
+      void ensurePosterForVideoAttachment(attachment);
+    }
+  },
+  { deep: true, immediate: true },
+);
+
 const filteredFeedItems = computed(() =>
   feedStore.items.filter((item) => {
     if (item.item_type !== "post") {
@@ -975,6 +1133,16 @@ const displayFeedItems = computed(() => {
     })
     .map((entry) => entry.item);
 });
+const hasProcessingMediaInFeed = computed(() =>
+  displayFeedItems.value.some((item) => {
+    if (item.item_type !== "post") {
+      return false;
+    }
+    return getPostAttachments(item.data.attachments).some(
+      (attachment) => attachment.media_type === "video" && attachment.processing_status === "processing",
+    );
+  }),
+);
 const isVirtualized = computed(() => displayFeedItems.value.length > 40);
 const visibleFeedEntries = computed(() => {
   if (!isVirtualized.value) {
@@ -989,6 +1157,38 @@ const virtualTopSpacerPx = computed(() =>
 );
 const virtualBottomSpacerPx = computed(() =>
   isVirtualized.value ? (displayFeedItems.value.length - virtualWindowEnd.value) * estimatedItemHeightPx : 0,
+);
+
+async function refreshFeedWhileMediaProcessing() {
+  if (!hasProcessingMediaInFeed.value || feedStore.isLoading || !navigator.onLine || document.hidden) {
+    return;
+  }
+  try {
+    await feedStore.loadFeed(true, { force: true });
+    await trackVisibleAdImpressions();
+    updateVirtualWindow();
+  } catch {
+    // Ignore transient refresh failures while processing media.
+  }
+}
+
+watch(
+  hasProcessingMediaInFeed,
+  (isProcessing) => {
+    if (isProcessing) {
+      if (!processingMediaRefreshTimer) {
+        processingMediaRefreshTimer = setInterval(() => {
+          void refreshFeedWhileMediaProcessing();
+        }, 8000);
+      }
+      return;
+    }
+    if (processingMediaRefreshTimer) {
+      clearInterval(processingMediaRefreshTimer);
+      processingMediaRefreshTimer = null;
+    }
+  },
+  { immediate: true },
 );
 
 async function onAdClick(item: { data: Record<string, unknown> }) {
@@ -1263,16 +1463,7 @@ function onLogout() {
             :tagged-user-ids="resolveTaggedUserIds(item.data.tagged_user_ids)"
             @mention-click="openAuthorProfile"
           />
-          <div v-if="getPostAttachments(item.data.attachments).length" class="post-attachment-grid">
-            <div
-              v-for="(attachment, attachmentIndex) in getPostAttachments(item.data.attachments)"
-              :key="`${attachment.media_url}-${attachmentIndex}`"
-              class="post-attachment-card"
-            >
-              <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Conversation attachment" />
-              <img :src="attachment.media_url" alt="Conversation attachment" />
-            </div>
-          </div>
+          <PostMediaCarousel v-if="getPostAttachments(item.data.attachments).length" :attachments="getPostAttachments(item.data.attachments)" />
           <div
             v-if="hasLinkPreviewContent(item.data.link_preview)"
             class="link-preview clickable-post-card"
@@ -1440,16 +1631,7 @@ function onLogout() {
                 :tagged-user-ids="post.tagged_user_ids || []"
                 @mention-click="openAuthorProfile"
               />
-              <div v-if="getPostAttachments(post.attachments).length" class="post-attachment-grid">
-                <div
-                  v-for="(attachment, attachmentIndex) in getPostAttachments(post.attachments)"
-                  :key="`${attachment.media_url}-${attachmentIndex}`"
-                  class="post-attachment-card"
-                >
-                  <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Conversation attachment" />
-                  <img :src="attachment.media_url" alt="Conversation attachment" />
-                </div>
-              </div>
+              <PostMediaCarousel v-if="getPostAttachments(post.attachments).length" :attachments="getPostAttachments(post.attachments)" />
               <div
                 v-if="hasLinkPreviewContent(post.link_preview)"
                 class="link-preview clickable-post-card"
@@ -1586,7 +1768,7 @@ function onLogout() {
           <input
             ref="replyAttachmentInputRef"
             type="file"
-            accept="image/*"
+            accept="image/*,video/*"
             class="hidden-file-input"
             @change="onReplyImageSelected"
           />
@@ -1598,14 +1780,25 @@ function onLogout() {
             class="post-attachment-card"
           >
             <button type="button" class="post-attachment-remove" @click="removeReplyAttachment(attachmentIndex)">x</button>
-            <img :src="attachment.media_url" alt="Reply attachment" />
+            <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Reply attachment" />
+            <video
+              v-else
+              :src="attachment.media_url"
+              :poster="resolveVideoPoster(attachment)"
+              controls
+              playsinline
+              preload="metadata"
+            />
           </div>
         </div>
-        <p v-if="isReplyUploadingImage">Uploading image...</p>
+        <p v-if="isReplyUploadingMedia" class="inline-upload-status">
+          <span class="inline-spinner" />
+          <span>Uploading media...</span>
+        </p>
         <input v-model="replyLinkDraft" placeholder="Optional link URL" />
         <div class="modal-actions">
           <button type="button" @click="closeReplyModal">Cancel</button>
-          <button type="button" :disabled="!replyDraft.trim() || isReplyUploadingImage" @click="submitReplyModal">
+          <button type="button" :disabled="!replyDraft.trim() || isReplyUploadingMedia" @click="submitReplyModal">
             Reply
           </button>
         </div>
@@ -1633,7 +1826,7 @@ function onLogout() {
           <input
             ref="shareAttachmentInputRef"
             type="file"
-            accept="image/*"
+            accept="image/*,video/*"
             class="hidden-file-input"
             @change="onShareImageSelected"
           />
@@ -1645,14 +1838,25 @@ function onLogout() {
             class="post-attachment-card"
           >
             <button type="button" class="post-attachment-remove" @click="removeShareAttachment(attachmentIndex)">x</button>
-            <img :src="attachment.media_url" alt="Amplify attachment" />
+            <img v-if="attachment.media_type === 'image'" :src="attachment.media_url" alt="Amplify attachment" />
+            <video
+              v-else
+              :src="attachment.media_url"
+              :poster="resolveVideoPoster(attachment)"
+              controls
+              playsinline
+              preload="metadata"
+            />
           </div>
         </div>
-        <p v-if="isShareUploadingImage">Uploading image...</p>
+        <p v-if="isShareUploadingMedia" class="inline-upload-status">
+          <span class="inline-spinner" />
+          <span>Uploading media...</span>
+        </p>
         <input v-model="shareLinkDraft" placeholder="Optional link URL" />
         <div class="modal-actions">
           <button type="button" @click="closeShareModal">Cancel</button>
-          <button type="button" :disabled="isShareUploadingImage" @click="submitShareModal">Amplify</button>
+          <button type="button" :disabled="isShareUploadingMedia" @click="submitShareModal">Amplify</button>
         </div>
       </section>
     </div>

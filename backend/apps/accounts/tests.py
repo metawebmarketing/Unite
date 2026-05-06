@@ -232,6 +232,13 @@ class AccountsApiTests(APITestCase):
         self.assertIn("frontend_base_url", get_response.data)
         self.assertIn("email_backend", get_response.data)
         self.assertIn("has_email_host_password", get_response.data)
+        self.assertIn("user_connection_limit", get_response.data)
+        self.assertIn("post_reply_share_char_cap", get_response.data)
+        self.assertIn("daily_post_reply_share_limit", get_response.data)
+        self.assertIn("media_storage_mode", get_response.data)
+        self.assertIn("media_public_base_url", get_response.data)
+        self.assertIn("post_video_max_upload_bytes", get_response.data)
+        self.assertIn("post_video_max_duration_seconds", get_response.data)
 
         patch_response = self.client.patch(
             "/api/v1/auth/site-settings",
@@ -254,6 +261,13 @@ class AccountsApiTests(APITestCase):
                 "allow_signup_on_ip_country_lookup_failure": False,
                 "ip_country_lookup_timeout_seconds": 2.5,
                 "ip_country_lookup_url_template": "https://geo.example/{ip}",
+                "user_connection_limit": 7500,
+                "post_reply_share_char_cap": 500,
+                "daily_post_reply_share_limit": 250,
+                "media_storage_mode": "s3",
+                "media_public_base_url": "https://media.unite.example",
+                "post_video_max_upload_bytes": 52428800,
+                "post_video_max_duration_seconds": 300,
             },
             format="json",
         )
@@ -265,6 +279,13 @@ class AccountsApiTests(APITestCase):
         self.assertEqual(patch_response.data["email_host"], "smtp.unite.example")
         self.assertEqual(int(patch_response.data["email_port"]), 587)
         self.assertEqual(patch_response.data["email_host_user"], "smtp-user")
+        self.assertEqual(int(patch_response.data["user_connection_limit"]), 7500)
+        self.assertEqual(int(patch_response.data["post_reply_share_char_cap"]), 500)
+        self.assertEqual(int(patch_response.data["daily_post_reply_share_limit"]), 250)
+        self.assertEqual(str(patch_response.data["media_storage_mode"]), "s3")
+        self.assertEqual(str(patch_response.data["media_public_base_url"]), "https://media.unite.example")
+        self.assertEqual(int(patch_response.data["post_video_max_upload_bytes"]), 52428800)
+        self.assertEqual(int(patch_response.data["post_video_max_duration_seconds"]), 300)
         self.assertNotIn("email_host_password", patch_response.data)
         self.assertTrue(bool(patch_response.data["has_email_host_password"]))
 

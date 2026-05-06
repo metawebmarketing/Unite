@@ -7,6 +7,7 @@ import { fetchProfile, updateProfile, uploadProfileImage } from "../api/profile"
 import { DEFAULT_INTEREST_SUGGESTIONS } from "../constants/interests";
 import { useAuthStore } from "../stores/auth";
 import { extractFirstHttpUrl } from "../utils/link-input";
+import { navigateBack } from "../utils/navigation";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -317,7 +318,7 @@ onMounted(async () => {
 });
 
 async function goBack() {
-  await router.push({ name: "feed" });
+  await navigateBack(router, { name: "feed" });
 }
 
 async function viewPublicProfile() {

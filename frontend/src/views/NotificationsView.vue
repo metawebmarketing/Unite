@@ -4,13 +4,14 @@ import { useRouter } from "vue-router";
 
 import { useNotificationsStore } from "../stores/notifications";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
+import { navigateBack } from "../utils/navigation";
 
 const notificationsStore = useNotificationsStore();
 const router = useRouter();
 const items = computed(() => notificationsStore.items);
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 
 onMounted(async () => {

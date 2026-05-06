@@ -1,0 +1,17 @@
+---
+description: Confirm root cause before implementing fixes
+alwaysApply: true
+---
+
+# Confirm First, Then Fix
+
+- Do not implement speculative fixes.
+- Reproduce and verify the issue path first (UI state, API payload, DB state, CSS cascade, or runtime logs as applicable).
+- State the confirmed root cause in plain terms before changing code.
+- Apply the smallest targeted fix to that root cause.
+- After changes, validate the exact reported scenario and report the result.
+
+## Avoid
+
+- Stacking multiple fallback layers without evidence.
+- Broad refactors when the issue scope is narrow.

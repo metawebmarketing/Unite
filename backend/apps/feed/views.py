@@ -23,6 +23,7 @@ from apps.moderation.models import ModerationFlag
 from apps.posts.models import Post
 from apps.posts.models import PostInteraction
 from apps.posts.services import build_link_preview
+from apps.posts.storage import resolve_public_media_url
 
 ALLOWED_POST_DATA_FIELDS = {
     "id",
@@ -45,6 +46,8 @@ ALLOWED_POST_DATA_FIELDS = {
     "is_pinned",
     "sentiment_label",
     "sentiment_score",
+    "attachments",
+    "is_root_post",
 }
 
 
@@ -300,13 +303,24 @@ class FeedListView(APIView):
 
         organic_items = []
         for post in ordered_page_posts:
+            attachments = [
+                {
+                    "media_type": attachment.media_type,
+                    "media_url": resolve_public_media_url(attachment.media_url, request),
+                    "thumbnail_url": resolve_public_media_url(attachment.thumbnail_url, request),
+                    "hls_manifest_url": resolve_public_media_url(attachment.hls_manifest_url, request),
+                    "processing_status": str(attachment.processing_status or "ready"),
+                    "media_bytes": int(attachment.media_bytes or 0),
+                }
+                for attachment in post.attachments.all()
+            ]
             post_data = {
                 "id": post.id,
                 "author_id": post.author_id,
                 "author_username": post.author.username,
                 "author_display_name": getattr(getattr(post.author, "profile", None), "display_name", "")
                 or post.author.username,
-                "author_profile_image_url": request.build_absolute_uri(post.author.profile.profile_image.url)
+                "author_profile_image_url": resolve_public_media_url(post.author.profile.profile_image.url, request)
                 if hasattr(post.author, "profile") and getattr(post.author.profile, "profile_image", None)
                 else "",
                 "author_is_ai": hasattr(post.author, "ai_account"),
@@ -337,6 +351,8 @@ class FeedListView(APIView):
                 "is_pinned": bool(post.is_pinned),
                 "sentiment_label": str(getattr(post, "sentiment_label", "neutral") or "neutral"),
                 "sentiment_score": float(getattr(post, "sentiment_score", 0.0) or 0.0),
+                "attachments": attachments,
+                "is_root_post": True,
             }
             if requested_fields is not None:
                 post_data = {key: value for key, value in post_data.items() if key in requested_fields}

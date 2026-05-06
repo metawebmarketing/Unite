@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import ConnectionsListCard from "../components/ConnectionsListCard.vue";
+import { navigateBack } from "../utils/navigation";
 
 const route = useRoute();
 const router = useRouter();
@@ -13,10 +14,10 @@ const userId = computed(() => {
 
 function goBack() {
   if (route.name === "user-connections" && userId.value) {
-    void router.push({ name: "user-profile", params: { userId: userId.value } });
+    void navigateBack(router, { name: "user-profile", params: { userId: userId.value } });
     return;
   }
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 </script>
 

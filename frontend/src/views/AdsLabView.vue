@@ -10,6 +10,7 @@ import {
   type AdMetrics,
   type AdSlotConfig,
 } from "../api/ads";
+import { navigateBack } from "../utils/navigation";
 
 const router = useRouter();
 const regionCode = ref("global");
@@ -29,7 +30,7 @@ const form = reactive({
 });
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 
 async function loadConfigs() {

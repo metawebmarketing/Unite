@@ -1,9 +1,11 @@
 from datetime import timedelta
+import os
+from pathlib import Path
+import tempfile
 from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousFileOperation
-from django.core.files.storage import default_storage
 from django.db.models import Count, Exists, OuterRef, Q, Sum
 from django.utils import timezone
 from rest_framework import status
@@ -19,6 +21,7 @@ from apps.accounts.ranking import (
     score_post_sentiment,
 )
 from apps.accounts.models import Profile
+from apps.accounts.runtime_config import get_runtime_config
 from apps.ai_accounts.services import log_ai_action
 from apps.moderation.models import ModerationFlag
 from apps.moderation.services import is_content_blocked
@@ -31,8 +34,17 @@ from apps.posts.idempotency import (
     save_idempotent_response,
 )
 from apps.posts.image_processing import optimize_post_image
-from apps.posts.models import IdempotencyRecord, MediaAttachment, Post, PostInteraction, SyncReplayEvent
+from apps.posts.models import IdempotencyRecord, MediaAttachment, Post, PostInteraction, SyncReplayEvent, UploadedMediaAsset
 from apps.posts.serializers import PostSerializer, ReactSerializer
+from apps.posts.storage import (
+    MediaStorageConfigError,
+    build_media_url_from_saved_name,
+    get_media_storage,
+    get_media_storage_mode,
+    resolve_public_media_url,
+)
+from apps.posts.tasks import process_uploaded_video
+from apps.posts.video_processing import probe_video_duration_seconds
 from apps.posts.sync_serializers import SyncReplayEventIngestSerializer
 from apps.feed.cache_utils import bump_user_feed_cache_version
 
@@ -45,6 +57,54 @@ def get_request_ip_address(request) -> str | None:
             return first_ip
     remote_addr = str(request.META.get("REMOTE_ADDR", "")).strip()
     return remote_addr or None
+
+
+def resolve_daily_post_reply_share_limit() -> int:
+    runtime = get_runtime_config()
+    configured = runtime.get("daily_post_reply_share_limit", getattr(settings, "UNITE_DAILY_POST_REPLY_SHARE_LIMIT", 250))
+    try:
+        normalized = int(configured)
+    except (TypeError, ValueError):
+        normalized = int(getattr(settings, "UNITE_DAILY_POST_REPLY_SHARE_LIMIT", 250))
+    return max(1, normalized)
+
+
+def get_daily_post_reply_share_usage(user) -> int:
+    today = timezone.localdate()
+    post_count = Post.objects.filter(author=user, parent_post__isnull=True, created_at__date=today).count()
+    reply_count = Post.objects.filter(author=user, parent_post__isnull=False, created_at__date=today).count()
+    share_count = PostInteraction.objects.filter(
+        user=user,
+        action_type__in=[PostInteraction.ActionType.REPOST, PostInteraction.ActionType.QUOTE],
+        created_at__date=today,
+    ).count()
+    return int(post_count + reply_count + share_count)
+
+
+def resolve_post_video_max_upload_bytes() -> int:
+    runtime = get_runtime_config()
+    configured = runtime.get(
+        "post_video_max_upload_bytes",
+        getattr(settings, "UNITE_POST_VIDEO_MAX_UPLOAD_BYTES", 25 * 1024 * 1024),
+    )
+    try:
+        normalized = int(configured)
+    except (TypeError, ValueError):
+        normalized = int(getattr(settings, "UNITE_POST_VIDEO_MAX_UPLOAD_BYTES", 1024 * 1024 * 1024))
+    return max(1, normalized)
+
+
+def resolve_post_video_max_duration_seconds() -> int:
+    runtime = get_runtime_config()
+    configured = runtime.get(
+        "post_video_max_duration_seconds",
+        getattr(settings, "UNITE_POST_VIDEO_MAX_DURATION_SECONDS", 300),
+    )
+    try:
+        normalized = int(configured)
+    except (TypeError, ValueError):
+        normalized = int(getattr(settings, "UNITE_POST_VIDEO_MAX_DURATION_SECONDS", 300))
+    return max(1, normalized)
 
 
 def build_post_queryset_for_user(user):
@@ -125,7 +185,7 @@ def build_post_queryset_for_user(user):
 def serialize_post_with_author(post, request, *, ensure_sentiment: bool = True) -> dict:
     if ensure_sentiment:
         ensure_post_sentiment(post)
-    payload = dict(PostSerializer(post).data)
+    payload = dict(PostSerializer(post, context={"request": request}).data)
     payload["interaction_counts"] = {
         "like": post.like_count,
         "reply": post.reply_count,
@@ -138,7 +198,7 @@ def serialize_post_with_author(post, request, *, ensure_sentiment: bool = True) 
     payload["author_username"] = post.author.username
     payload["author_display_name"] = getattr(getattr(post.author, "profile", None), "display_name", "") or post.author.username
     payload["author_profile_image_url"] = (
-        request.build_absolute_uri(post.author.profile.profile_image.url)
+        resolve_public_media_url(post.author.profile.profile_image.url, request)
         if hasattr(post.author, "profile") and getattr(post.author.profile, "profile_image", None)
         else ""
     )
@@ -152,6 +212,7 @@ def serialize_post_with_author(post, request, *, ensure_sentiment: bool = True) 
     )
     payload["sentiment_label"] = str(getattr(post, "sentiment_label", "neutral") or "neutral")
     payload["sentiment_score"] = float(getattr(post, "sentiment_score", 0.0) or 0.0)
+    payload["is_root_post"] = not bool(getattr(post, "parent_post_id", None))
     return payload
 
 
@@ -197,6 +258,7 @@ class PostImageUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
+            storage = get_media_storage()
             processed = optimize_post_image(
                 image_file,
                 max_width=int(getattr(settings, "UNITE_POST_IMAGE_MAX_WIDTH", 1600)),
@@ -205,14 +267,124 @@ class PostImageUploadView(APIView):
             )
             filename = f"post-{request.user.id}-{uuid4().hex}.jpg"
             save_path = f"posts/{request.user.id}/{filename}"
-            saved_name = default_storage.save(save_path, processed)
-            media_url = default_storage.url(saved_name)
-        except (SuspiciousFileOperation, OSError, ValueError):
+            saved_name = storage.save(save_path, processed)
+            media_url = build_media_url_from_saved_name(saved_name, request)
+            UploadedMediaAsset.objects.update_or_create(
+                user=request.user,
+                media_type=MediaAttachment.MediaType.IMAGE,
+                media_url=media_url,
+                defaults={
+                    "processing_status": UploadedMediaAsset.ProcessingStatus.READY,
+                    "media_bytes": int(getattr(image_file, "size", 0) or 0),
+                    "storage_mode": get_media_storage_mode(),
+                    "storage_saved_name": saved_name,
+                    "thumbnail_url": "",
+                    "hls_manifest_url": "",
+                    "thumbnail_saved_name": "",
+                    "hls_manifest_saved_name": "",
+                },
+            )
+        except (SuspiciousFileOperation, OSError, ValueError, MediaStorageConfigError):
             return Response({"detail": "Unable to process image upload."}, status=status.HTTP_400_BAD_REQUEST)
-        absolute_media_url = request.build_absolute_uri(media_url)
         return Response(
-            {"media_type": "image", "media_url": absolute_media_url},
+            {"media_type": "image", "media_url": media_url},
             status=status.HTTP_201_CREATED,
+        )
+
+
+class PostVideoUploadView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "post_upload_image"
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        video_file = request.FILES.get("video")
+        if not video_file:
+            return Response({"detail": "Video file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        content_type = str(getattr(video_file, "content_type", "") or "").lower()
+        if not content_type.startswith("video/"):
+            return Response({"detail": "Only video uploads are allowed."}, status=status.HTTP_400_BAD_REQUEST)
+        extension = str(Path(str(getattr(video_file, "name", "") or "")).suffix or "").lower()
+        allowed_extensions = {".mp4", ".mov", ".m4v", ".webm"}
+        if extension and extension not in allowed_extensions:
+            return Response({"detail": "Unsupported video file extension."}, status=status.HTTP_400_BAD_REQUEST)
+        max_upload_bytes = resolve_post_video_max_upload_bytes()
+        if int(getattr(video_file, "size", 0) or 0) > max_upload_bytes:
+            return Response({"detail": "Video exceeds maximum upload size."}, status=status.HTTP_400_BAD_REQUEST)
+        max_duration_seconds = resolve_post_video_max_duration_seconds()
+        with tempfile.TemporaryDirectory(prefix="unite-video-validate-") as temp_dir:
+            temp_path = os.path.join(temp_dir, "upload.mp4")
+            with open(temp_path, "wb") as temp_file:
+                for chunk in video_file.chunks():
+                    temp_file.write(chunk)
+            try:
+                duration_seconds = float(probe_video_duration_seconds(temp_path))
+            except RuntimeError:
+                duration_seconds = 0.0
+            if duration_seconds > 0 and duration_seconds > float(max_duration_seconds):
+                rounded_duration = round(float(duration_seconds), 2)
+                return Response(
+                    {
+                        "detail": (
+                            f"Video exceeds maximum duration ({max_duration_seconds} seconds). "
+                            f"Detected duration: {rounded_duration} seconds."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            video_file.seek(0)
+        storage_mode = get_media_storage_mode()
+        try:
+            storage = get_media_storage()
+            token = uuid4().hex
+            saved_name = storage.save(f"posts/{request.user.id}/post-video-{token}.mp4", video_file)
+            thumbnail_saved_name = f"posts/{request.user.id}/post-video-{token}.jpg"
+            hls_manifest_saved_name = f"posts/{request.user.id}/post-video-{token}.m3u8"
+            media_url = build_media_url_from_saved_name(saved_name, request, storage_mode=storage_mode)
+            thumbnail_url = build_media_url_from_saved_name(
+                thumbnail_saved_name,
+                request,
+                storage_mode=storage_mode,
+            )
+            hls_manifest_url = build_media_url_from_saved_name(
+                hls_manifest_saved_name,
+                request,
+                storage_mode=storage_mode,
+            )
+            asset, _ = UploadedMediaAsset.objects.update_or_create(
+                user=request.user,
+                media_type=MediaAttachment.MediaType.VIDEO,
+                media_url=media_url,
+                defaults={
+                    "thumbnail_url": thumbnail_url,
+                    "hls_manifest_url": hls_manifest_url,
+                    "processing_status": UploadedMediaAsset.ProcessingStatus.PROCESSING,
+                    "media_bytes": int(getattr(video_file, "size", 0) or 0),
+                    "storage_mode": storage_mode,
+                    "storage_saved_name": saved_name,
+                    "thumbnail_saved_name": thumbnail_saved_name,
+                    "hls_manifest_saved_name": hls_manifest_saved_name,
+                },
+            )
+        except (SuspiciousFileOperation, OSError, ValueError, MediaStorageConfigError):
+            return Response({"detail": "Unable to process video upload."}, status=status.HTTP_400_BAD_REQUEST)
+        process_uploaded_video.delay(
+            saved_name,
+            thumbnail_saved_name,
+            hls_manifest_saved_name,
+            storage_mode=storage_mode,
+            uploaded_asset_id=asset.id,
+        )
+        return Response(
+            {
+                "media_type": "video",
+                "media_url": media_url,
+                "thumbnail_url": thumbnail_url,
+                "hls_manifest_url": hls_manifest_url,
+                "media_bytes": int(getattr(video_file, "size", 0) or 0),
+                "processing_status": "processing",
+            },
+            status=status.HTTP_202_ACCEPTED,
         )
 
 
@@ -232,7 +404,7 @@ class PostListCreateView(APIView):
 
     def get(self, request):
         queryset = build_post_queryset_for_user(request.user).filter(parent_post__isnull=True)[:50]
-        serializer = PostSerializer(queryset, many=True)
+        serializer = PostSerializer(queryset, many=True, context={"request": request})
         return Response(_serialize_posts(serializer.data, queryset))
 
     def post(self, request):
@@ -259,8 +431,26 @@ class PostListCreateView(APIView):
                 ai_log(status_code, payload)
                 return Response(payload, status=status_code)
 
-        serializer = PostSerializer(data=request.data)
+        serializer = PostSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
+        daily_post_reply_share_limit = resolve_daily_post_reply_share_limit()
+        daily_usage = get_daily_post_reply_share_usage(request.user)
+        if daily_usage >= daily_post_reply_share_limit:
+            response_payload = {
+                "detail": f"Daily post/reply/share limit reached ({daily_post_reply_share_limit}).",
+                "limit_scope": "daily_post_reply_share",
+            }
+            if idempotency_key:
+                save_idempotent_response(
+                    user_id=request.user.id,
+                    endpoint="posts.create",
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    response_body=response_payload,
+                )
+            ai_log(status.HTTP_429_TOO_MANY_REQUESTS, response_payload)
+            return Response(response_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
         request_ip_address = get_request_ip_address(request)
         region_code = request.user.profile.location if hasattr(request.user, "profile") else "global"
         burst_window_seconds = int(getattr(settings, "UNITE_SPAM_BURST_WINDOW_SECONDS", 60))
@@ -449,6 +639,36 @@ class PostReactView(APIView):
             return Response(response_payload, status=status.HTTP_404_NOT_FOUND)
         post_sentiment_label, post_sentiment_score = ensure_post_sentiment(post)
         post_is_toxic = is_post_toxic(post)
+        daily_post_reply_share_limit = resolve_daily_post_reply_share_limit()
+        gated_actions = {
+            PostInteraction.ActionType.REPLY,
+            PostInteraction.ActionType.REPOST,
+            PostInteraction.ActionType.QUOTE,
+        }
+        if action in gated_actions:
+            is_repost_toggle_off = action == PostInteraction.ActionType.REPOST and PostInteraction.objects.filter(
+                post=post,
+                user=request.user,
+                action_type=PostInteraction.ActionType.REPOST,
+            ).exists()
+            if not is_repost_toggle_off:
+                daily_usage = get_daily_post_reply_share_usage(request.user)
+                if daily_usage >= daily_post_reply_share_limit:
+                    response_payload = {
+                        "detail": f"Daily post/reply/share limit reached ({daily_post_reply_share_limit}).",
+                        "limit_scope": "daily_post_reply_share",
+                    }
+                    if idempotency_key:
+                        save_idempotent_response(
+                            user_id=request.user.id,
+                            endpoint=f"posts.react:{post_id}",
+                            key=idempotency_key,
+                            request_hash=request_hash,
+                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            response_body=response_payload,
+                        )
+                    ai_log(status.HTTP_429_TOO_MANY_REQUESTS, response_payload)
+                    return Response(response_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         singleton_actions = {
             PostInteraction.ActionType.LIKE,
@@ -598,11 +818,30 @@ class PostReactView(APIView):
                     ip_address=request_ip_address,
                 )
                 for attachment in attachments:
-                    MediaAttachment.objects.create(
-                        post=reply_post,
-                        media_type=str(attachment.get("media_type", "")).strip().lower(),
-                        media_url=str(attachment.get("media_url", "")).strip(),
+                    media_type = str(attachment.get("media_type", "")).strip().lower()
+                    media_url = str(attachment.get("media_url", "")).strip()
+                    attachment_payload = {
+                        "post": reply_post,
+                        "media_type": media_type,
+                        "media_url": media_url,
+                    }
+                    asset = (
+                        UploadedMediaAsset.objects.filter(
+                            user=request.user,
+                            media_type=media_type,
+                            media_url=media_url,
+                        )
+                        .order_by("-updated_at")
+                        .first()
                     )
+                    if asset:
+                        attachment_payload["thumbnail_url"] = str(asset.thumbnail_url or "")
+                        attachment_payload["hls_manifest_url"] = str(asset.hls_manifest_url or "")
+                        attachment_payload["processing_status"] = str(
+                            asset.processing_status or UploadedMediaAsset.ProcessingStatus.READY
+                        )
+                        attachment_payload["media_bytes"] = int(asset.media_bytes or 0)
+                    MediaAttachment.objects.create(**attachment_payload)
                 reply_sentiment_label, reply_sentiment_score = score_post_sentiment(reply_post)
                 if hasattr(request.user, "profile"):
                     record_profile_action_score(
@@ -821,5 +1060,6 @@ def _serialize_posts(serialized_posts: list[dict], queryset) -> list[dict]:
             serialized["author_is_connected"] = bool(getattr(post, "author_is_connected", False))
             serialized["sentiment_label"] = str(getattr(post, "sentiment_label", "neutral") or "neutral")
             serialized["sentiment_score"] = float(getattr(post, "sentiment_score", 0.0) or 0.0)
+            serialized["is_root_post"] = not bool(getattr(post, "parent_post_id", None))
         result.append(serialized)
     return result

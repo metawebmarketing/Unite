@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 
 import { fetchAiAuditRecords, type AiAuditRecord } from "../api/ai-audit";
 import { useErrorModalStore } from "../stores/error-modal";
+import { navigateBack } from "../utils/navigation";
 
 const router = useRouter();
 const errorModalStore = useErrorModalStore();
@@ -19,7 +20,7 @@ const statusText = ref("");
 const errorText = ref("");
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 
 async function loadAudits() {

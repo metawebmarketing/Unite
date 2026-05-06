@@ -66,4 +66,37 @@ def get_runtime_config() -> dict:
             settings_obj.ip_country_lookup_url_template,
             getattr(settings, "UNITE_IP_COUNTRY_LOOKUP_URL_TEMPLATE", "http://ip-api.com/json/{ip}?fields=status,country"),
         ),
+        "user_connection_limit": _resolved_number(
+            settings_obj.user_connection_limit,
+            getattr(settings, "UNITE_USER_CONNECTION_LIMIT", 7500),
+            int,
+        ),
+        "post_reply_share_char_cap": _resolved_number(
+            settings_obj.post_reply_share_char_cap,
+            getattr(settings, "UNITE_POST_REPLY_SHARE_CHAR_CAP", 500),
+            int,
+        ),
+        "daily_post_reply_share_limit": _resolved_number(
+            settings_obj.daily_post_reply_share_limit,
+            getattr(settings, "UNITE_DAILY_POST_REPLY_SHARE_LIMIT", 250),
+            int,
+        ),
+        "media_storage_mode": _resolved_string(
+            settings_obj.media_storage_mode,
+            getattr(settings, "UNITE_MEDIA_STORAGE_MODE", "local"),
+        ).lower(),
+        "media_public_base_url": _resolved_string(
+            settings_obj.media_public_base_url,
+            getattr(settings, "UNITE_MEDIA_PUBLIC_BASE_URL", ""),
+        ).rstrip("/"),
+        "post_video_max_upload_bytes": _resolved_number(
+            settings_obj.post_video_max_upload_bytes,
+            getattr(settings, "UNITE_POST_VIDEO_MAX_UPLOAD_BYTES", 1024 * 1024 * 1024),
+            int,
+        ),
+        "post_video_max_duration_seconds": _resolved_number(
+            settings_obj.post_video_max_duration_seconds,
+            getattr(settings, "UNITE_POST_VIDEO_MAX_DURATION_SECONDS", 300),
+            int,
+        ),
     }

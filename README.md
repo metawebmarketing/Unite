@@ -8,6 +8,16 @@ Implementation scaffold for the Unite social network plan.
 2. `python backend/manage.py migrate`
 3. `cd backend && python -m daphne -b 127.0.0.1 -p 8000 config.asgi:application`
 
+### Media/video runtime requirements
+
+- Video upload duration/processing requires `ffmpeg` + `ffprobe` on the backend runtime machine.
+- Windows install (recommended):
+  - `powershell -NoProfile -Command "winget install --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements --silent"`
+- After installation, restart terminal/session and backend process so updated environment variables are picked up.
+- Optional explicit paths (if PATH does not resolve binaries):
+  - `UNITE_FFMPEG_PATH` (full path to `ffmpeg`/`ffmpeg.exe`)
+  - `UNITE_FFPROBE_PATH` (full path to `ffprobe`/`ffprobe.exe`)
+
 ### Sentiment ranking runtime requirements
 
 - Real-time sentiment ranking uses the Hugging Face Transformers pipeline with:

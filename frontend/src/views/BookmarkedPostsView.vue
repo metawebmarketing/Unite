@@ -6,6 +6,7 @@ import { fetchBookmarkedPosts, type PostRecord } from "../api/posts";
 import { useAuthStore } from "../stores/auth";
 import { useErrorModalStore } from "../stores/error-modal";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
+import { navigateBack } from "../utils/navigation";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -23,7 +24,7 @@ function formatScore(value: unknown): string {
 }
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 
 function openPost(postId: number) {

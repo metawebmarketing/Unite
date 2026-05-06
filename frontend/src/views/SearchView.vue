@@ -2,11 +2,12 @@
 import { useRouter } from "vue-router";
 
 import ConnectionsListCard from "../components/ConnectionsListCard.vue";
+import { navigateBack } from "../utils/navigation";
 
 const router = useRouter();
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 </script>
 

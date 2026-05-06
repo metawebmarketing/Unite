@@ -49,10 +49,44 @@ class MediaAttachment(models.Model):
     post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="attachments")
     media_type = models.CharField(max_length=16, choices=MediaType.choices)
     media_url = models.URLField(validators=[MinLengthValidator(10)])
+    thumbnail_url = models.URLField(blank=True, default="")
+    hls_manifest_url = models.URLField(blank=True, default="")
+    processing_status = models.CharField(max_length=16, default="ready")
+    media_bytes = models.PositiveBigIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
         return f"MediaAttachment<{self.id}:{self.media_type}>"
+
+
+class UploadedMediaAsset(models.Model):
+    class ProcessingStatus(models.TextChoices):
+        PROCESSING = "processing", "Processing"
+        READY = "ready", "Ready"
+        FAILED = "failed", "Failed"
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="uploaded_media_assets")
+    media_type = models.CharField(max_length=16, choices=MediaAttachment.MediaType.choices)
+    media_url = models.URLField(unique=True, validators=[MinLengthValidator(10)])
+    thumbnail_url = models.URLField(blank=True, default="")
+    hls_manifest_url = models.URLField(blank=True, default="")
+    media_bytes = models.PositiveBigIntegerField(default=0)
+    processing_status = models.CharField(max_length=16, choices=ProcessingStatus.choices, default=ProcessingStatus.READY)
+    storage_mode = models.CharField(max_length=16, blank=True, default="")
+    storage_saved_name = models.CharField(max_length=500, blank=True, default="")
+    thumbnail_saved_name = models.CharField(max_length=500, blank=True, default="")
+    hls_manifest_saved_name = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "media_type", "-created_at"]),
+            models.Index(fields=["user", "processing_status", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"UploadedMediaAsset<{self.id}:{self.user_id}:{self.media_type}>"
 
 
 class PostInteraction(models.Model):

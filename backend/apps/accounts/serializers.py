@@ -15,6 +15,7 @@ from apps.accounts.ip_country import is_signup_country_valid_for_ip
 from apps.accounts.models import Profile, SignupInvite, SiteSetting
 from apps.accounts.runtime_config import get_runtime_config
 from apps.connections.models import Connection
+from apps.posts.storage import resolve_public_media_url
 
 User = get_user_model()
 URL_CANDIDATE_REGEX = re.compile(r"(https?://[^\s<>\"']+)", re.IGNORECASE)
@@ -154,10 +155,7 @@ class ProfileSerializer(serializers.ModelSerializer):
     def get_profile_image_url(self, obj):
         if not obj.profile_image:
             return ""
-        request = self.context.get("request")
-        if request is not None:
-            return request.build_absolute_uri(obj.profile_image.url)
-        return obj.profile_image.url
+        return resolve_public_media_url(obj.profile_image.url, self.context.get("request"))
 
     def get_username(self, obj):
         return obj.user.username
@@ -328,6 +326,18 @@ class SiteSettingSerializer(serializers.ModelSerializer):
     email_host_password = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=255)
     has_email_host_password = serializers.SerializerMethodField()
 
+    def validate_media_storage_mode(self, value):
+        token = str(value or "").strip().lower()
+        if not token:
+            return "local"
+        allowed = {SiteSetting.MediaStorageMode.LOCAL, SiteSetting.MediaStorageMode.S3}
+        if token not in allowed:
+            raise serializers.ValidationError("Media storage mode must be either 'local' or 's3'.")
+        return token
+
+    def validate_media_public_base_url(self, value):
+        return str(value or "").strip()
+
     def validate_allowed_signup_countries(self, value):
         normalized: list[str] = []
         seen: set[str] = set()
@@ -338,6 +348,47 @@ class SiteSettingSerializer(serializers.ModelSerializer):
                 continue
             seen.add(token_key)
             normalized.append(token)
+        return normalized
+
+    def validate_user_connection_limit(self, value):
+        if value is None:
+            return value
+        if int(value) < 1:
+            raise serializers.ValidationError("User connection limit must be at least 1.")
+        return int(value)
+
+    def validate_post_reply_share_char_cap(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Post/reply/share character cap must be at least 1.")
+        if normalized > 500:
+            raise serializers.ValidationError("Post/reply/share character cap cannot exceed 500.")
+        return normalized
+
+    def validate_daily_post_reply_share_limit(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Daily post/reply/share limit must be at least 1.")
+        return normalized
+
+    def validate_post_video_max_upload_bytes(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Post video max upload bytes must be at least 1.")
+        return normalized
+
+    def validate_post_video_max_duration_seconds(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Post video max duration seconds must be at least 1.")
         return normalized
 
     def validate(self, attrs):
@@ -402,6 +453,13 @@ class SiteSettingSerializer(serializers.ModelSerializer):
             runtime_config.get("ip_country_lookup_timeout_seconds", 3.0)
         )
         payload["ip_country_lookup_url_template"] = str(runtime_config.get("ip_country_lookup_url_template", ""))
+        payload["user_connection_limit"] = int(runtime_config.get("user_connection_limit", 7500))
+        payload["post_reply_share_char_cap"] = int(runtime_config.get("post_reply_share_char_cap", 500))
+        payload["daily_post_reply_share_limit"] = int(runtime_config.get("daily_post_reply_share_limit", 250))
+        payload["media_storage_mode"] = str(runtime_config.get("media_storage_mode", "local")).lower()
+        payload["media_public_base_url"] = str(runtime_config.get("media_public_base_url", "")).rstrip("/")
+        payload["post_video_max_upload_bytes"] = int(runtime_config.get("post_video_max_upload_bytes", 1024 * 1024 * 1024))
+        payload["post_video_max_duration_seconds"] = int(runtime_config.get("post_video_max_duration_seconds", 300))
         payload["has_email_host_password"] = bool(str(runtime_config.get("email_host_password", "") or "").strip())
         return payload
 
@@ -427,6 +485,13 @@ class SiteSettingSerializer(serializers.ModelSerializer):
             "allow_signup_on_ip_country_lookup_failure",
             "ip_country_lookup_timeout_seconds",
             "ip_country_lookup_url_template",
+            "user_connection_limit",
+            "post_reply_share_char_cap",
+            "daily_post_reply_share_limit",
+            "media_storage_mode",
+            "media_public_base_url",
+            "post_video_max_upload_bytes",
+            "post_video_max_duration_seconds",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

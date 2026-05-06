@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import Profile
+from apps.accounts.models import SiteSetting
 from apps.ai_accounts.models import AiAccountProfile
 from apps.connections.models import Connection
 from apps.connections.views import ConnectUserView
@@ -99,3 +100,19 @@ class ConnectionsApiTests(APITestCase):
         status_response = self.client.get(f"/api/v1/connections/{first.id}/status")
         self.assertEqual(status_response.status_code, 200)
         self.assertTrue(status_response.data["is_blocked"])
+
+    def test_connect_respects_user_connection_limit(self):
+        settings_obj = SiteSetting.get_solo()
+        settings_obj.user_connection_limit = 1
+        settings_obj.save(update_fields=["user_connection_limit", "updated_at"])
+        requester = User.objects.create_user(username="limit_req", password="Password123!")
+        existing = User.objects.create_user(username="limit_existing", password="Password123!")
+        candidate = User.objects.create_user(username="limit_candidate", password="Password123!")
+        Profile.objects.create(user=requester, display_name="Limit Requester")
+        Profile.objects.create(user=existing, display_name="Limit Existing")
+        Profile.objects.create(user=candidate, display_name="Limit Candidate")
+        Connection.objects.create(requester=requester, recipient=existing, status=Connection.Status.ACCEPTED)
+        self.client.force_authenticate(user=requester)
+        response = self.client.post(f"/api/v1/connections/{candidate.id}/connect", format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Connection limit reached", str(response.data.get("detail", "")))

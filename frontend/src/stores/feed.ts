@@ -4,7 +4,7 @@ import axios from "axios";
 import { fetchFeed, fetchFeedConfig, type FeedConfig, type FeedItem } from "../api/feed";
 import { enqueueReactPost, flushOfflineQueue } from "../offline/action-queue";
 import { readCachedFeed, writeCachedFeed } from "../offline/feed-cache";
-import { reactToPost } from "../api/posts";
+import { reactToPost, type PostAttachment } from "../api/posts";
 
 type FeedMode = "connections" | "suggestions" | "both" | "interest";
 
@@ -243,7 +243,7 @@ export const useFeedStore = defineStore("feed", {
       payload: {
         content: string;
         link_url?: string;
-        attachments?: Array<{ media_type: "image"; media_url: string }>;
+        attachments?: PostAttachment[];
         tagged_user_ids?: number[];
       },
     ) {

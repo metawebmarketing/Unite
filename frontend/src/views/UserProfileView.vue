@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { blockUser, connectToUser, disconnectFromUser, fetchConnectionStatus, unblockUser } from "../api/connections";
@@ -9,9 +9,14 @@ import { useAuthStore } from "../stores/auth";
 import { useErrorModalStore } from "../stores/error-modal";
 import { formatLocalizedPostDateTime } from "../utils/date-display";
 import { extractFirstHttpUrl } from "../utils/link-input";
+import { navigateBack } from "../utils/navigation";
 
 const InAppBrowserModal = defineAsyncComponent(async () => {
   const componentModule = await import("../components/InAppBrowserModal.vue");
+  return (componentModule as { default?: unknown }).default || componentModule;
+});
+const PostMediaCarousel = defineAsyncComponent(async () => {
+  const componentModule = await import("../components/PostMediaCarousel.vue");
   return (componentModule as { default?: unknown }).default || componentModule;
 });
 
@@ -32,6 +37,7 @@ const commonConnections = ref<Array<{ user_id: number; username: string; display
 const commonConnectionCount = ref(0);
 const showInAppBrowser = ref(false);
 const inAppBrowserUrl = ref("");
+let processingMediaRefreshTimer: ReturnType<typeof setInterval> | null = null;
 const pinnedPosts = computed(() => posts.value.filter((post) => Boolean(post.is_pinned)));
 const regularPosts = computed(() => posts.value.filter((post) => !post.is_pinned));
 const perActionRankRows = computed(() => {
@@ -67,7 +73,7 @@ function placeholderAvatar(name: string) {
   )}`;
 }
 
-async function loadProfile() {
+async function loadProfile(silent = false) {
   const userId = Number(route.params.userId);
   if (!Number.isInteger(userId) || userId <= 0) {
     errorText.value = "Invalid user.";
@@ -125,7 +131,9 @@ async function loadProfile() {
     }
   } catch {
     errorText.value = "Unable to load profile.";
-    errorModalStore.showError("Unable to load profile.");
+    if (!silent) {
+      errorModalStore.showError("Unable to load profile.");
+    }
     profile.value = null;
     posts.value = [];
   } finally {
@@ -134,7 +142,7 @@ async function loadProfile() {
 }
 
 function goBack() {
-  void router.push({ name: "feed" });
+  void navigateBack(router, { name: "feed" });
 }
 
 function openPost(postId: number) {
@@ -242,8 +250,30 @@ async function onBookmark(post: PostRecord) {
   }
 }
 
+const hasProcessingMedia = computed(() =>
+  posts.value.some((post) =>
+    (post.attachments || []).some(
+      (attachment) => attachment.media_type === "video" && attachment.processing_status === "processing",
+    ),
+  ),
+);
+
+async function refreshProfileWhileMediaProcessing() {
+  if (!hasProcessingMedia.value || isLoading.value || !navigator.onLine || document.hidden) {
+    return;
+  }
+  await loadProfile(true);
+}
+
 onMounted(() => {
   void loadProfile();
+});
+
+onUnmounted(() => {
+  if (processingMediaRefreshTimer) {
+    clearInterval(processingMediaRefreshTimer);
+    processingMediaRefreshTimer = null;
+  }
 });
 
 watch(
@@ -251,6 +281,25 @@ watch(
   () => {
     void loadProfile();
   },
+);
+
+watch(
+  hasProcessingMedia,
+  (isProcessing) => {
+    if (isProcessing) {
+      if (!processingMediaRefreshTimer) {
+        processingMediaRefreshTimer = setInterval(() => {
+          void refreshProfileWhileMediaProcessing();
+        }, 8000);
+      }
+      return;
+    }
+    if (processingMediaRefreshTimer) {
+      clearInterval(processingMediaRefreshTimer);
+      processingMediaRefreshTimer = null;
+    }
+  },
+  { immediate: true },
 );
 </script>
 
@@ -354,6 +403,9 @@ watch(
       <h2 v-if="pinnedPosts.length">Pinned Conversations</h2>
       <article v-for="post in pinnedPosts" :key="`pinned-${post.id}`" class="feed-item clickable-post-card" @click="openPost(post.id)">
         <p>{{ post.content }}</p>
+        <div v-if="post.attachments?.length" @click.stop>
+          <PostMediaCarousel :attachments="post.attachments" />
+        </div>
         <p v-if="formatLocalizedPostDateTime(post.created_at)" class="suggestion-meta">
           {{ formatLocalizedPostDateTime(post.created_at) }}
         </p>
@@ -421,6 +473,9 @@ watch(
       <h2>Conversations</h2>
       <article v-for="post in regularPosts" :key="post.id" class="feed-item clickable-post-card" @click="openPost(post.id)">
         <p>{{ post.content }}</p>
+        <div v-if="post.attachments?.length" @click.stop>
+          <PostMediaCarousel :attachments="post.attachments" />
+        </div>
         <p v-if="formatLocalizedPostDateTime(post.created_at)" class="suggestion-meta">
           {{ formatLocalizedPostDateTime(post.created_at) }}
         </p>

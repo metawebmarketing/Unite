@@ -2,6 +2,7 @@ import base64
 import json
 from datetime import datetime
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Q
@@ -11,10 +12,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import Profile
+from apps.accounts.runtime_config import get_runtime_config
 from apps.connections.models import Connection
 from apps.connections.serializers import ConnectionSerializer
 from apps.feed.cache_utils import bump_user_feed_cache_version
 from apps.notifications.services import create_notification
+from apps.posts.storage import resolve_public_media_url
 
 User = get_user_model()
 
@@ -54,6 +57,16 @@ def get_connected_user_ids(user_id: int) -> set[int]:
         if int(recipient_id) != int(user_id):
             connected_ids.add(int(recipient_id))
     return connected_ids
+
+
+def get_connection_limit() -> int:
+    runtime = get_runtime_config()
+    configured = runtime.get("user_connection_limit", getattr(settings, "UNITE_USER_CONNECTION_LIMIT", 7500))
+    try:
+        normalized = int(configured)
+    except (TypeError, ValueError):
+        normalized = int(getattr(settings, "UNITE_USER_CONNECTION_LIMIT", 7500))
+    return max(1, normalized)
 
 
 def build_relationship_status(*, viewer_id: int, target_id: int) -> dict:
@@ -200,7 +213,7 @@ class ConnectionListView(APIView):
             display_name = (getattr(profile, "display_name", "") or other_user.username).strip()
             profile_image_url = ""
             if profile and getattr(profile, "profile_image", None):
-                profile_image_url = request.build_absolute_uri(profile.profile_image.url)
+                profile_image_url = resolve_public_media_url(profile.profile_image.url, request)
             shared_interest_count = len(request_user_interests.intersection(profile_interest_map.get(other_user.id, set())))
             items.append(
                 {
@@ -308,7 +321,7 @@ class UserSearchView(APIView):
         items = []
         for profile in profiles:
             display_name = (profile.display_name or profile.user.username).strip()
-            profile_image_url = request.build_absolute_uri(profile.profile_image.url) if profile.profile_image else ""
+            profile_image_url = resolve_public_media_url(profile.profile_image.url, request) if profile.profile_image else ""
             shared_interest_count = len(request_user_interests.intersection(set(profile.interests or [])))
             items.append(
                 {
@@ -386,7 +399,7 @@ class ConnectionStatusView(APIView):
                     "user_id": profile.user_id,
                     "username": profile.user.username,
                     "display_name": profile.display_name or profile.user.username,
-                    "profile_image_url": request.build_absolute_uri(profile.profile_image.url)
+                    "profile_image_url": resolve_public_media_url(profile.profile_image.url, request)
                     if getattr(profile, "profile_image", None)
                     else "",
                 }
@@ -428,6 +441,19 @@ class ConnectUserView(APIView):
             Q(requester=request.user, recipient_id=user_id) | Q(requester_id=user_id, recipient=request.user)
         ).exists():
             return Response({"detail": "Connection unavailable."}, status=status.HTTP_403_FORBIDDEN)
+        connection_limit = get_connection_limit()
+        requester_connected_user_ids = get_connected_user_ids(request.user.id)
+        if user_id not in requester_connected_user_ids and len(requester_connected_user_ids) >= connection_limit:
+            return Response(
+                {"detail": f"Connection limit reached ({connection_limit})."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        target_connected_user_ids = get_connected_user_ids(user_id)
+        if request.user.id not in target_connected_user_ids and len(target_connected_user_ids) >= connection_limit:
+            return Response(
+                {"detail": "This user has reached their connection limit."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         reverse_pending = Connection.objects.filter(
             requester_id=user_id,
             recipient=request.user,
@@ -504,7 +530,7 @@ class PendingConnectionListView(APIView):
                     "user_id": requester.id,
                     "username": requester.username,
                     "display_name": (getattr(profile, "display_name", "") or requester.username).strip(),
-                    "profile_image_url": request.build_absolute_uri(profile.profile_image.url)
+                    "profile_image_url": resolve_public_media_url(profile.profile_image.url, request)
                     if profile and getattr(profile, "profile_image", None)
                     else "",
                     "updated_at": connection.updated_at.isoformat(),
