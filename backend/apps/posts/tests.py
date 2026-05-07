@@ -33,6 +33,10 @@ User = get_user_model()
 
 
 class PostsApiTests(APITestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
     def test_post_serializer_limits_non_parent_posts_to_single_attachment(self):
         user = User.objects.create_user(username="non_parent_limit_user", password="Password123!")
         Profile.objects.create(user=user, display_name="Non Parent Limit")
@@ -216,7 +220,7 @@ class PostsApiTests(APITestCase):
         self.client.force_authenticate(user=reporter)
         response = self.client.post(
             f"/api/v1/posts/{safe_post.id}/react",
-            {"action": "report"},
+            {"action": "report", "content": "This appears misleading and needs moderator review."},
             format="json",
         )
         self.assertEqual(response.status_code, 201)
@@ -486,14 +490,14 @@ class PostsApiTests(APITestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_multiple_image_attachments_rejected(self):
+    def test_multiple_image_attachments_allowed_for_main_post(self):
         user = User.objects.create_user(username="multi_image_user", password="Password123!")
         Profile.objects.create(user=user, display_name="MultiImageUser")
         self.client.force_authenticate(user=user)
         response = self.client.post(
             "/api/v1/posts/",
             {
-                "content": "post with too many images",
+                "content": "post with two images",
                 "attachments": [
                     {"media_type": "image", "media_url": "https://cdn.example.com/one.png"},
                     {"media_type": "image", "media_url": "https://cdn.example.com/two.png"},
@@ -501,7 +505,7 @@ class PostsApiTests(APITestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 201)
 
     def test_upload_post_image_returns_media_url(self):
         user = User.objects.create_user(username="image_upload_user", password="Password123!")
@@ -842,7 +846,7 @@ class PostsApiTests(APITestCase):
         self.client.force_authenticate(user=reporter)
         response = self.client.post(
             f"/api/v1/posts/{post.id}/react",
-            {"action": "report"},
+            {"action": "report", "content": "This post may violate policy due to abusive language."},
             format="json",
         )
         self.assertEqual(response.status_code, 201)
@@ -853,6 +857,21 @@ class PostsApiTests(APITestCase):
                 category="user_report",
             ).exists()
         )
+
+    def test_report_action_requires_report_details(self):
+        reporter = User.objects.create_user(username="reporter_no_detail", password="Password123!")
+        Profile.objects.create(user=reporter, display_name="ReporterNoDetail", location="global")
+        author = User.objects.create_user(username="author_no_detail", password="Password123!")
+        Profile.objects.create(user=author, display_name="AuthorNoDetail")
+        post = Post.objects.create(author=author, content="review me without details")
+        self.client.force_authenticate(user=reporter)
+        response = self.client.post(
+            f"/api/v1/posts/{post.id}/react",
+            {"action": "report", "content": "   "},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("content", response.data)
 
     def test_idempotency_key_replays_create_post_without_duplication(self):
         user = User.objects.create_user(username="idem_user", password="Password123!")
@@ -1033,6 +1052,18 @@ class PostsApiTests(APITestCase):
         self.assertEqual(connected_response.status_code, 200)
         self.assertTrue(any(int(item["id"]) == post.id for item in connected_response.data))
 
+    def test_user_post_list_returns_full_profile_post_history(self):
+        viewer = User.objects.create_user(username="full_profile_viewer", password="Password123!")
+        author = User.objects.create_user(username="full_profile_author", password="Password123!")
+        Profile.objects.create(user=viewer, display_name="Full Profile Viewer")
+        Profile.objects.create(user=author, display_name="Full Profile Author")
+        for index in range(65):
+            Post.objects.create(author=author, content=f"profile post {index}")
+        self.client.force_authenticate(user=viewer)
+        response = self.client.get(f"/api/v1/posts/user/{author.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 65)
+
     def test_post_detail_hides_replies_from_blocked_authors(self):
         viewer = User.objects.create_user(username="posts_block_viewer", password="Password123!")
         author = User.objects.create_user(username="posts_block_author", password="Password123!")
@@ -1100,6 +1131,7 @@ class PostsApiTests(APITestCase):
             media_url=media_url,
             media_bytes=128,
             processing_status=UploadedMediaAsset.ProcessingStatus.PROCESSING,
+            analysis_status=UploadedMediaAsset.AnalysisStatus.APPROVED,
             thumbnail_url="https://cdn.example.com/video.jpg",
             hls_manifest_url="https://cdn.example.com/video.m3u8",
         )
@@ -1119,6 +1151,39 @@ class PostsApiTests(APITestCase):
         self.assertEqual(attachment.media_type, "video")
         self.assertEqual(attachment.processing_status, UploadedMediaAsset.ProcessingStatus.PROCESSING)
         self.assertTrue(str(attachment.thumbnail_url).endswith(".jpg"))
+
+    def test_create_post_rejects_video_attachment_when_analysis_not_approved(self):
+        user = User.objects.create_user(username="video_pending_analysis_author", password="Password123!")
+        Profile.objects.create(user=user, display_name="Video Pending Analysis Author")
+        media_url = "https://cdn.example.com/video-pending.mp4"
+        UploadedMediaAsset.objects.create(
+            user=user,
+            media_type=MediaAttachment.MediaType.VIDEO,
+            media_url=media_url,
+            media_bytes=128,
+            processing_status=UploadedMediaAsset.ProcessingStatus.READY,
+            analysis_status=UploadedMediaAsset.AnalysisStatus.PENDING,
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/v1/posts/",
+            {
+                "content": "Video post pending analysis",
+                "attachments": [{"media_type": "video", "media_url": media_url}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("analysis is pending", str(response.data.get("attachments", [""])[0]).lower())
+
+    def test_upload_video_rejects_policy_precheck_filename(self):
+        user = User.objects.create_user(username="video_precheck_user", password="Password123!")
+        Profile.objects.create(user=user, display_name="Video Precheck User")
+        self.client.force_authenticate(user=user)
+        uploaded = SimpleUploadedFile("graphic-violence-gore.mp4", b"\x00" * 1024, content_type="video/mp4")
+        response = self.client.post("/api/v1/posts/upload-video", {"video": uploaded}, format="multipart")
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("blocked_categories", response.data)
 
     def test_create_post_rejects_more_than_twenty_attachments(self):
         user = User.objects.create_user(username="too_many_media", password="Password123!")
@@ -1153,6 +1218,7 @@ class PostsApiTests(APITestCase):
                 media_url=url,
                 media_bytes=60,
                 processing_status=UploadedMediaAsset.ProcessingStatus.PROCESSING,
+                analysis_status=UploadedMediaAsset.AnalysisStatus.APPROVED,
             )
         self.client.force_authenticate(user=user)
         response = self.client.post(
@@ -1179,6 +1245,7 @@ class PostsApiTests(APITestCase):
             thumbnail_url="https://cdn.example.com/reply-video.jpg",
             hls_manifest_url="https://cdn.example.com/reply-video.m3u8",
             processing_status=UploadedMediaAsset.ProcessingStatus.PROCESSING,
+            analysis_status=UploadedMediaAsset.AnalysisStatus.APPROVED,
             media_bytes=1234,
         )
         self.client.force_authenticate(user=replier)

@@ -59,6 +59,7 @@ export interface FeedPage {
   next_cursor: string | null;
   has_more: boolean;
   organic_count: number;
+  policy_version?: string;
 }
 
 export async function fetchFeed(
@@ -66,10 +67,12 @@ export async function fetchFeed(
   cursor: string | null = null,
   interestTag: string | null = null,
   fields: string[] | null = null,
+  signal?: AbortSignal,
 ): Promise<FeedPage> {
   const normalizedFields =
     fields && fields.length > 0 ? fields.map((value) => value.trim()).filter(Boolean).join(",") : undefined;
   const response = await apiClient.get<FeedPage>("/feed/", {
+    signal,
     params: {
       mode,
       cursor,

@@ -81,6 +81,11 @@ function buildRetryConfig(requestConfig: Record<string, unknown>, nextToken: str
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
+    if (error?.code === "ERR_CANCELED") {
+      // Force-refresh and prefetch flows intentionally cancel stale requests.
+      // Avoid showing "Request failed" for expected cancellations.
+      return Promise.reject(error);
+    }
     const requestConfig = (error?.config || {}) as Record<string, unknown>;
     const statusCode = Number(error?.response?.status || 0);
     const requestHeaders = (requestConfig.headers || {}) as Record<string, unknown>;

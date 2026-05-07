@@ -23,7 +23,11 @@ const errorText = ref("");
 
 const form = reactive({
   version: "v-next",
-  categories: "harassment,illegal_promotion",
+  categories: "graphic_violence,nudity_pornographic,child_sexual_exploitative",
+  allowed_exceptions:
+    "artwork_non_graphic_nudity,artwork_non_graphic_violence,video_game_non_graphic_nudity,video_game_non_graphic_violence",
+  provider_overrides: "{\"image\":\"siglip2\",\"video\":\"videomae\"}",
+  media_thresholds: "{\"graphic_violence\":0.5,\"nudity_pornographic\":0.5,\"child_sexual_exploitative\":0.35}",
   rollout_percentage: 100,
 });
 
@@ -59,6 +63,12 @@ async function onCreatePack() {
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean),
+      allowed_exceptions: form.allowed_exceptions
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+      provider_overrides: JSON.parse(form.provider_overrides || "{}"),
+      media_thresholds: JSON.parse(form.media_thresholds || "{}"),
       enabled: true,
       rollout_percentage: Number(form.rollout_percentage),
       effective_from: new Date().toISOString(),
@@ -121,6 +131,15 @@ onMounted(async () => {
     <form class="stack" @submit.prevent="onCreatePack">
       <input v-model="form.version" placeholder="Version" required />
       <input v-model="form.categories" placeholder="Categories comma-separated" required />
+      <input v-model="form.allowed_exceptions" placeholder="Allowed exceptions comma-separated" />
+      <textarea
+        v-model="form.provider_overrides"
+        placeholder='Provider overrides JSON e.g. {"image":"siglip2","video":"videomae"}'
+      />
+      <textarea
+        v-model="form.media_thresholds"
+        placeholder='Media thresholds JSON e.g. {"graphic_violence":0.5}'
+      />
       <input v-model.number="form.rollout_percentage" type="number" min="0" max="100" />
       <button type="submit">Create policy pack</button>
       <p v-if="statusText">{{ statusText }}</p>
@@ -129,7 +148,8 @@ onMounted(async () => {
     <h2>Policy Packs</h2>
     <ul class="interest-list">
       <li v-for="pack in packs" :key="pack.id">
-        {{ pack.region_code }} / {{ pack.version }} / rollout {{ pack.rollout_percentage }}%
+        {{ pack.region_code }} / {{ pack.version }} / rollout {{ pack.rollout_percentage }}% /
+        blocked {{ pack.prohibited_categories.length }} / exceptions {{ pack.allowed_exceptions.length }}
       </li>
     </ul>
   </section>

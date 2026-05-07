@@ -5,6 +5,8 @@ import BookmarkedPostsView from "../views/BookmarkedPostsView.vue";
 import ConnectionsListView from "../views/ConnectionsListView.vue";
 import MessagesView from "../views/MessagesView.vue";
 import MessageThreadView from "../views/MessageThreadView.vue";
+import ModerationAccountsView from "../views/ModerationAccountsView.vue";
+import ModerationView from "../views/ModerationView.vue";
 import NotificationsView from "../views/NotificationsView.vue";
 import PinnedPostsView from "../views/PinnedPostsView.vue";
 import PolicyLabView from "../views/PolicyLabView.vue";
@@ -60,6 +62,18 @@ const router = createRouter({
       path: "/site-settings",
       name: "site-settings",
       component: SiteSettingsView,
+      meta: { requiresAuth: true, requiresStaff: true },
+    },
+    {
+      path: "/moderation",
+      name: "moderation",
+      component: ModerationView,
+      meta: { requiresAuth: true, requiresStaff: true },
+    },
+    {
+      path: "/moderation/accounts",
+      name: "moderation-accounts",
+      component: ModerationAccountsView,
       meta: { requiresAuth: true, requiresStaff: true },
     },
     {

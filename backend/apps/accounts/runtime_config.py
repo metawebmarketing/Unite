@@ -81,6 +81,11 @@ def get_runtime_config() -> dict:
             getattr(settings, "UNITE_DAILY_POST_REPLY_SHARE_LIMIT", 250),
             int,
         ),
+        "penalty_expiry_days": _resolved_number(
+            settings_obj.penalty_expiry_days,
+            getattr(settings, "UNITE_PENALTY_EXPIRY_DAYS", 90),
+            int,
+        ),
         "media_storage_mode": _resolved_string(
             settings_obj.media_storage_mode,
             getattr(settings, "UNITE_MEDIA_STORAGE_MODE", "local"),
@@ -97,6 +102,21 @@ def get_runtime_config() -> dict:
         "post_video_max_duration_seconds": _resolved_number(
             settings_obj.post_video_max_duration_seconds,
             getattr(settings, "UNITE_POST_VIDEO_MAX_DURATION_SECONDS", 300),
+            int,
+        ),
+        "feed_date_lookback_hours": _resolved_number(
+            settings_obj.feed_date_lookback_hours,
+            getattr(settings, "UNITE_FEED_FRESHNESS_WINDOW_HOURS", 168),
+            int,
+        ),
+        "feed_fallback_date_lookback_hours": _resolved_number(
+            settings_obj.feed_fallback_date_lookback_hours,
+            getattr(settings, "UNITE_FEED_FALLBACK_LOOKBACK_HOURS", 720),
+            int,
+        ),
+        "feed_fallback_post_count": _resolved_number(
+            settings_obj.feed_fallback_post_count,
+            getattr(settings, "UNITE_FEED_FALLBACK_POST_COUNT", 100),
             int,
         ),
     }

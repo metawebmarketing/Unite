@@ -127,6 +127,9 @@ class LoginSerializer(serializers.Serializer):
         user = authenticate(username=attrs["username"], password=attrs["password"])
         if not user:
             raise serializers.ValidationError("Invalid username/password.")
+        profile = Profile.objects.filter(user=user).first()
+        if profile and bool(profile.is_banned):
+            raise serializers.ValidationError("This account is banned.")
         attrs["user"] = user
         return attrs
 
@@ -375,6 +378,14 @@ class SiteSettingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Daily post/reply/share limit must be at least 1.")
         return normalized
 
+    def validate_penalty_expiry_days(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Penalty expiry days must be at least 1.")
+        return normalized
+
     def validate_post_video_max_upload_bytes(self, value):
         if value is None:
             return value
@@ -389,6 +400,30 @@ class SiteSettingSerializer(serializers.ModelSerializer):
         normalized = int(value)
         if normalized < 1:
             raise serializers.ValidationError("Post video max duration seconds must be at least 1.")
+        return normalized
+
+    def validate_feed_date_lookback_hours(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Feed date lookback hours must be at least 1.")
+        return normalized
+
+    def validate_feed_fallback_date_lookback_hours(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Feed fallback date lookback hours must be at least 1.")
+        return normalized
+
+    def validate_feed_fallback_post_count(self, value):
+        if value is None:
+            return value
+        normalized = int(value)
+        if normalized < 1:
+            raise serializers.ValidationError("Feed fallback post count must be at least 1.")
         return normalized
 
     def validate(self, attrs):
@@ -456,10 +491,16 @@ class SiteSettingSerializer(serializers.ModelSerializer):
         payload["user_connection_limit"] = int(runtime_config.get("user_connection_limit", 7500))
         payload["post_reply_share_char_cap"] = int(runtime_config.get("post_reply_share_char_cap", 500))
         payload["daily_post_reply_share_limit"] = int(runtime_config.get("daily_post_reply_share_limit", 250))
+        payload["penalty_expiry_days"] = int(runtime_config.get("penalty_expiry_days", 90))
         payload["media_storage_mode"] = str(runtime_config.get("media_storage_mode", "local")).lower()
         payload["media_public_base_url"] = str(runtime_config.get("media_public_base_url", "")).rstrip("/")
         payload["post_video_max_upload_bytes"] = int(runtime_config.get("post_video_max_upload_bytes", 1024 * 1024 * 1024))
         payload["post_video_max_duration_seconds"] = int(runtime_config.get("post_video_max_duration_seconds", 300))
+        payload["feed_date_lookback_hours"] = int(runtime_config.get("feed_date_lookback_hours", 168))
+        payload["feed_fallback_date_lookback_hours"] = int(
+            runtime_config.get("feed_fallback_date_lookback_hours", 720)
+        )
+        payload["feed_fallback_post_count"] = int(runtime_config.get("feed_fallback_post_count", 100))
         payload["has_email_host_password"] = bool(str(runtime_config.get("email_host_password", "") or "").strip())
         return payload
 
@@ -488,10 +529,14 @@ class SiteSettingSerializer(serializers.ModelSerializer):
             "user_connection_limit",
             "post_reply_share_char_cap",
             "daily_post_reply_share_limit",
+            "penalty_expiry_days",
             "media_storage_mode",
             "media_public_base_url",
             "post_video_max_upload_bytes",
             "post_video_max_duration_seconds",
+            "feed_date_lookback_hours",
+            "feed_fallback_date_lookback_hours",
+            "feed_fallback_post_count",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

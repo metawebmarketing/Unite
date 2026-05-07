@@ -90,10 +90,14 @@ export interface SiteSettingsPayload {
   user_connection_limit: number | null;
   post_reply_share_char_cap: number | null;
   daily_post_reply_share_limit: number | null;
+  penalty_expiry_days: number | null;
   media_storage_mode: "local" | "s3";
   media_public_base_url: string;
   post_video_max_upload_bytes: number | null;
   post_video_max_duration_seconds: number | null;
+  feed_date_lookback_hours: number | null;
+  feed_fallback_date_lookback_hours: number | null;
+  feed_fallback_post_count: number | null;
   updated_at: string;
 }
 

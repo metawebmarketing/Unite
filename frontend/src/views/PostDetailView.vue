@@ -50,6 +50,8 @@ const errorText = ref("");
 const activeMenuPostId = ref<number | null>(null);
 const showReplyModal = ref(false);
 const showShareModal = ref(false);
+const showReportModal = ref(false);
+const showReportWarningModal = ref(false);
 const replyDraft = ref("");
 const replyLinkDraft = ref("");
 const replyTargetPostId = ref<number | null>(null);
@@ -73,6 +75,9 @@ function resolveApiErrorMessage(error: unknown, fallback: string): string {
 const generatedVideoPosterByUrl = ref<Record<string, string>>({});
 const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
+const reportTargetPostId = ref<number | null>(null);
+const reportDetailsDraft = ref("");
+const isSubmittingReport = ref(false);
 const showInAppBrowser = ref(false);
 const inAppBrowserUrl = ref("");
 const connectionStatusByAuthorId = ref<Record<number, boolean>>({});
@@ -566,6 +571,48 @@ async function onBookmark(target: PostDetailResponse["post"] | PostDetailRespons
   }
 }
 
+async function onReport(target: PostDetailResponse["post"] | PostDetailResponse["replies"][number]) {
+  reportTargetPostId.value = target.id;
+  reportDetailsDraft.value = "";
+  showReportModal.value = true;
+  activeMenuPostId.value = null;
+}
+
+function closeReportModal() {
+  showReportModal.value = false;
+  reportTargetPostId.value = null;
+  reportDetailsDraft.value = "";
+}
+
+function submitReportDetailsModal() {
+  if (!reportDetailsDraft.value.trim()) {
+    return;
+  }
+  showReportModal.value = false;
+  showReportWarningModal.value = true;
+}
+
+function closeReportWarningModal() {
+  showReportWarningModal.value = false;
+  reportTargetPostId.value = null;
+  reportDetailsDraft.value = "";
+}
+
+async function confirmReportSubmission() {
+  const postId = reportTargetPostId.value;
+  const reportDetails = reportDetailsDraft.value.trim();
+  if (!postId || !reportDetails || isSubmittingReport.value) {
+    return;
+  }
+  isSubmittingReport.value = true;
+  try {
+    await reactToPost(postId, { action: "report", content: reportDetails });
+    closeReportWarningModal();
+  } finally {
+    isSubmittingReport.value = false;
+  }
+}
+
 async function onTogglePin(target: PostDetailResponse["post"] | PostDetailResponse["replies"][number]) {
   if (!isOwnPostRecord(target) || target.id !== detail.value?.post.id) {
     return;
@@ -713,10 +760,12 @@ watch(
 );
 
 watch(
-  [showReplyModal, showShareModal, showCopyLinkModal, showInAppBrowser],
-  ([replyModalValue, shareModalValue, copyModalValue, inAppBrowserValue]) => {
+  [showReplyModal, showShareModal, showCopyLinkModal, showInAppBrowser, showReportModal, showReportWarningModal],
+  ([replyModalValue, shareModalValue, copyModalValue, inAppBrowserValue, reportModalValue, reportWarningModalValue]) => {
     document.body.style.overflow =
-      replyModalValue || shareModalValue || copyModalValue || inAppBrowserValue ? "hidden" : "";
+      replyModalValue || shareModalValue || copyModalValue || inAppBrowserValue || reportModalValue || reportWarningModalValue
+        ? "hidden"
+        : "";
   },
   { immediate: true },
 );
@@ -813,6 +862,13 @@ watch(
             </button>
             <button type="button" @click.stop="onToggleBlock(detail.post.author_id)">
               {{ relationshipStatusByAuthorId[detail.post.author_id] === "blocked" ? "Unblock" : "Block" }}
+            </button>
+            <button
+              v-if="!isOwnPostRecord(detail.post)"
+              type="button"
+              @click.stop="onReport(detail.post)"
+            >
+              Report
             </button>
           </div>
         </div>
@@ -937,6 +993,13 @@ watch(
               </button>
               <button type="button" @click.stop="onToggleBlock(reply.author_id)">
                 {{ relationshipStatusByAuthorId[reply.author_id] === "blocked" ? "Unblock" : "Block" }}
+              </button>
+              <button
+                v-if="!isOwnPostRecord(reply)"
+                type="button"
+                @click.stop="onReport(reply)"
+              >
+                Report
               </button>
             </div>
           </div>
@@ -1125,6 +1188,36 @@ watch(
         <input :value="copyLinkFallbackValue" readonly />
         <div class="modal-actions">
           <button type="button" @click="closeCopyLinkModal">Close</button>
+        </div>
+      </section>
+    </div>
+    <div v-if="showReportModal" class="modal-overlay" @click.self="closeReportModal">
+      <section class="auth-card modal-card">
+        <h2>Report conversation</h2>
+        <p>Please describe what policy issue you are reporting.</p>
+        <textarea
+          v-model="reportDetailsDraft"
+          rows="5"
+          maxlength="500"
+          placeholder="Required: include context for moderation review."
+        />
+        <div class="modal-actions">
+          <button type="button" @click="closeReportModal">Cancel</button>
+          <button type="button" :disabled="!reportDetailsDraft.trim()" @click="submitReportDetailsModal">
+            Submit report
+          </button>
+        </div>
+      </section>
+    </div>
+    <div v-if="showReportWarningModal" class="modal-overlay" @click.self="closeReportWarningModal">
+      <section class="auth-card modal-card">
+        <h2>Confirm report submission</h2>
+        <p>False reports can result in moderation penalties on your account.</p>
+        <div class="modal-actions">
+          <button type="button" :disabled="isSubmittingReport" @click="closeReportWarningModal">Back</button>
+          <button type="button" :disabled="isSubmittingReport" @click="confirmReportSubmission">
+            {{ isSubmittingReport ? "Submitting..." : "I understand, submit report" }}
+          </button>
         </div>
       </section>
     </div>

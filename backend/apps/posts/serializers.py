@@ -183,7 +183,25 @@ class PostSerializer(serializers.ModelSerializer):
                 )
                 if not asset:
                     raise serializers.ValidationError("Video attachments must be uploaded through the video upload endpoint.")
+                if str(asset.analysis_status or "").strip().lower() != UploadedMediaAsset.AnalysisStatus.APPROVED:
+                    raise serializers.ValidationError(
+                        "Video attachment analysis is pending or blocked. Please wait for approval."
+                    )
                 cumulative_video_bytes += int(asset.media_bytes or 0)
+            elif owner and getattr(owner, "is_authenticated", False):
+                image_asset = (
+                    UploadedMediaAsset.objects.filter(
+                        user=owner,
+                        media_type=MediaAttachment.MediaType.IMAGE,
+                        media_url=media_url,
+                    )
+                    .order_by("-updated_at")
+                    .first()
+                )
+                if image_asset and str(image_asset.analysis_status or "").strip().lower() != UploadedMediaAsset.AnalysisStatus.APPROVED:
+                    raise serializers.ValidationError(
+                        "Image attachment analysis is pending or blocked. Please wait for approval."
+                    )
         max_upload_bytes = resolve_post_video_max_upload_bytes()
         if cumulative_video_bytes > max_upload_bytes:
             raise serializers.ValidationError(
@@ -274,4 +292,23 @@ class ReactSerializer(serializers.Serializer):
                 raise serializers.ValidationError("Attachment media_url is required.")
             if not validate_media_url(media_url, media_type):
                 raise serializers.ValidationError("Invalid attachment URL.")
+            request = self.context.get("request")
+            owner = getattr(request, "user", None) if request else None
+            if owner and getattr(owner, "is_authenticated", False):
+                asset = (
+                    UploadedMediaAsset.objects.filter(user=owner, media_type=media_type, media_url=media_url)
+                    .order_by("-updated_at")
+                    .first()
+                )
+                if asset and str(asset.analysis_status or "").strip().lower() != UploadedMediaAsset.AnalysisStatus.APPROVED:
+                    raise serializers.ValidationError(
+                        "Attachment analysis is pending or blocked. Please wait for approval."
+                    )
         return value
+
+    def validate(self, attrs):
+        action = str(attrs.get("action", "")).strip().lower()
+        content = str(attrs.get("content", "")).strip()
+        if action == "report" and not content:
+            raise serializers.ValidationError({"content": "Report details are required."})
+        return attrs

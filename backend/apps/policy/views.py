@@ -1,7 +1,7 @@
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.permissions import IsAdminUser
 
 from apps.policy.models import PolicyPack
 from apps.policy.serializers import (
@@ -30,9 +30,7 @@ class PolicyResolveView(APIView):
 
 class PolicyPackListCreateView(APIView):
     def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsAdminUser()]
-        return [IsAuthenticated()]
+        return [IsAdminUser()]
 
     def get(self, request):
         region_code = request.query_params.get("region_code")

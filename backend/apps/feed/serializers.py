@@ -25,3 +25,4 @@ class FeedPageSerializer(serializers.Serializer):
     next_cursor = serializers.CharField(allow_null=True)
     has_more = serializers.BooleanField()
     organic_count = serializers.IntegerField()
+    policy_version = serializers.CharField(required=False, allow_blank=True)

@@ -12,3 +12,5 @@ Pillow
 transformers
 sentencepiece
 protobuf
+torch
+av

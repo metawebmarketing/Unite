@@ -20,13 +20,14 @@ from apps.accounts.ranking import (
     record_profile_action_score,
     score_post_sentiment,
 )
-from apps.accounts.models import Profile
 from apps.accounts.runtime_config import get_runtime_config
 from apps.ai_accounts.services import log_ai_action
 from apps.moderation.models import ModerationFlag
-from apps.moderation.services import is_content_blocked
+from apps.moderation.media_analysis import quick_filename_precheck
+from apps.moderation.services import get_user_posting_restriction, is_content_blocked
 from apps.connections.models import Connection
 from apps.feed.sentiment_providers import score_sentiment_text
+from apps.feed.ranking import score_feed_items
 from apps.notifications.services import create_notification
 from apps.posts.idempotency import (
     hash_request_payload,
@@ -36,6 +37,10 @@ from apps.posts.idempotency import (
 from apps.posts.image_processing import optimize_post_image
 from apps.posts.models import IdempotencyRecord, MediaAttachment, Post, PostInteraction, SyncReplayEvent, UploadedMediaAsset
 from apps.posts.serializers import PostSerializer, ReactSerializer
+from apps.posts.media_intelligence import (
+    compute_interaction_fingerprint,
+    ensure_post_analysis,
+)
 from apps.posts.storage import (
     MediaStorageConfigError,
     build_media_url_from_saved_name,
@@ -43,7 +48,7 @@ from apps.posts.storage import (
     get_media_storage_mode,
     resolve_public_media_url,
 )
-from apps.posts.tasks import process_uploaded_video
+from apps.posts.tasks import analyze_uploaded_media_asset, process_uploaded_video
 from apps.posts.video_processing import probe_video_duration_seconds
 from apps.posts.sync_serializers import SyncReplayEventIngestSerializer
 from apps.feed.cache_utils import bump_user_feed_cache_version
@@ -71,14 +76,13 @@ def resolve_daily_post_reply_share_limit() -> int:
 
 def get_daily_post_reply_share_usage(user) -> int:
     today = timezone.localdate()
-    post_count = Post.objects.filter(author=user, parent_post__isnull=True, created_at__date=today).count()
-    reply_count = Post.objects.filter(author=user, parent_post__isnull=False, created_at__date=today).count()
+    post_reply_count = Post.objects.filter(author=user, created_at__date=today).count()
     share_count = PostInteraction.objects.filter(
         user=user,
         action_type__in=[PostInteraction.ActionType.REPOST, PostInteraction.ActionType.QUOTE],
         created_at__date=today,
     ).count()
-    return int(post_count + reply_count + share_count)
+    return int(post_reply_count + share_count)
 
 
 def resolve_post_video_max_upload_bytes() -> int:
@@ -105,6 +109,27 @@ def resolve_post_video_max_duration_seconds() -> int:
     except (TypeError, ValueError):
         normalized = int(getattr(settings, "UNITE_POST_VIDEO_MAX_DURATION_SECONDS", 300))
     return max(1, normalized)
+
+
+def estimate_post_rank_score(post: Post) -> int:
+    ranked = score_feed_items(
+        user_context={},
+        candidate_posts=[
+            {
+                "id": post.id,
+                "interest_tags": post.interest_tags if isinstance(post.interest_tags, list) else [],
+                "like_count": int(getattr(post, "like_count", 0) or 0),
+                "reply_count": int(getattr(post, "reply_count", 0) or 0),
+                "sentiment_score": float(getattr(post, "sentiment_score", 0.0) or 0.0),
+                "author_profile_score": float(
+                    getattr(getattr(post.author, "profile", None), "rank_overall_score", 0.0) or 0.0
+                ),
+            }
+        ],
+    )
+    if not ranked:
+        return 0
+    return int(ranked[0].get("rank_score", 0) or 0)
 
 
 def build_post_queryset_for_user(user):
@@ -170,21 +195,18 @@ def build_post_queryset_for_user(user):
     for requester_id, recipient_id in connected_pairs:
         connected_user_ids.add(int(requester_id))
         connected_user_ids.add(int(recipient_id))
-    hidden_private_user_ids = set(
-        Profile.objects.filter(is_private_profile=True)
-        .exclude(user_id__in=connected_user_ids)
-        .values_list("user_id", flat=True)
-    )
     if blocked_user_ids:
         queryset = queryset.exclude(author_id__in=blocked_user_ids)
-    if hidden_private_user_ids:
-        queryset = queryset.exclude(author_id__in=hidden_private_user_ids)
+    queryset = queryset.exclude(
+        Q(author__profile__is_private_profile=True) & ~Q(author_id__in=connected_user_ids)
+    )
     return queryset
 
 
 def serialize_post_with_author(post, request, *, ensure_sentiment: bool = True) -> dict:
     if ensure_sentiment:
-        ensure_post_sentiment(post)
+        region_code = request.user.profile.location if hasattr(request.user, "profile") else "global"
+        ensure_post_analysis(post=post, region_code=region_code)
     payload = dict(PostSerializer(post, context={"request": request}).data)
     payload["interaction_counts"] = {
         "like": post.like_count,
@@ -248,6 +270,15 @@ class PostImageUploadView(APIView):
         image_file = request.FILES.get("image")
         if not image_file:
             return Response({"detail": "Image file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        precheck_blocked, precheck_categories = quick_filename_precheck(str(getattr(image_file, "name", "") or ""))
+        if precheck_blocked:
+            return Response(
+                {
+                    "detail": "Image rejected by policy pre-check.",
+                    "blocked_categories": precheck_categories,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
         content_type = str(getattr(image_file, "content_type", "") or "").lower()
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image uploads are allowed."}, status=status.HTTP_400_BAD_REQUEST)
@@ -269,12 +300,14 @@ class PostImageUploadView(APIView):
             save_path = f"posts/{request.user.id}/{filename}"
             saved_name = storage.save(save_path, processed)
             media_url = build_media_url_from_saved_name(saved_name, request)
-            UploadedMediaAsset.objects.update_or_create(
+            asset, _ = UploadedMediaAsset.objects.update_or_create(
                 user=request.user,
                 media_type=MediaAttachment.MediaType.IMAGE,
                 media_url=media_url,
                 defaults={
                     "processing_status": UploadedMediaAsset.ProcessingStatus.READY,
+                    "analysis_status": UploadedMediaAsset.AnalysisStatus.PENDING,
+                    "needs_analysis_refresh": True,
                     "media_bytes": int(getattr(image_file, "size", 0) or 0),
                     "storage_mode": get_media_storage_mode(),
                     "storage_saved_name": saved_name,
@@ -286,6 +319,10 @@ class PostImageUploadView(APIView):
             )
         except (SuspiciousFileOperation, OSError, ValueError, MediaStorageConfigError):
             return Response({"detail": "Unable to process image upload."}, status=status.HTTP_400_BAD_REQUEST)
+        analyze_uploaded_media_asset.delay(
+            uploaded_asset_id=asset.id,
+            region_code=getattr(getattr(request.user, "profile", None), "location", "global"),
+        )
         return Response(
             {"media_type": "image", "media_url": media_url},
             status=status.HTTP_201_CREATED,
@@ -301,6 +338,15 @@ class PostVideoUploadView(APIView):
         video_file = request.FILES.get("video")
         if not video_file:
             return Response({"detail": "Video file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        precheck_blocked, precheck_categories = quick_filename_precheck(str(getattr(video_file, "name", "") or ""))
+        if precheck_blocked:
+            return Response(
+                {
+                    "detail": "Video rejected by policy pre-check.",
+                    "blocked_categories": precheck_categories,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
         content_type = str(getattr(video_file, "content_type", "") or "").lower()
         if not content_type.startswith("video/"):
             return Response({"detail": "Only video uploads are allowed."}, status=status.HTTP_400_BAD_REQUEST)
@@ -359,6 +405,8 @@ class PostVideoUploadView(APIView):
                     "thumbnail_url": thumbnail_url,
                     "hls_manifest_url": hls_manifest_url,
                     "processing_status": UploadedMediaAsset.ProcessingStatus.PROCESSING,
+                    "analysis_status": UploadedMediaAsset.AnalysisStatus.PENDING,
+                    "needs_analysis_refresh": True,
                     "media_bytes": int(getattr(video_file, "size", 0) or 0),
                     "storage_mode": storage_mode,
                     "storage_saved_name": saved_name,
@@ -430,6 +478,20 @@ class PostListCreateView(APIView):
             if found:
                 ai_log(status_code, payload)
                 return Response(payload, status=status_code)
+
+        is_banned_account = bool(getattr(getattr(request.user, "profile", None), "is_banned", False))
+        if is_banned_account:
+            response_payload = {"detail": "Your account is banned and cannot create posts."}
+            ai_log(status.HTTP_403_FORBIDDEN, response_payload)
+            return Response(response_payload, status=status.HTTP_403_FORBIDDEN)
+        is_penalty_blocked, active_penalty_count = get_user_posting_restriction(user_id=request.user.id)
+        if is_penalty_blocked:
+            response_payload = {
+                "detail": "Posting is restricted due to active moderation penalties.",
+                "active_penalty_count": active_penalty_count,
+            }
+            ai_log(status.HTTP_403_FORBIDDEN, response_payload)
+            return Response(response_payload, status=status.HTTP_403_FORBIDDEN)
 
         serializer = PostSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
@@ -548,6 +610,10 @@ class PostListCreateView(APIView):
                 return Response(response_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
         created_post = serializer.save(author=request.user, ip_address=request_ip_address)
         sentiment_label, sentiment_score = score_post_sentiment(created_post)
+        ensure_post_analysis(
+            post=created_post,
+            region_code=region_code,
+        )
         emit_post_mentions(
             tagged_user_ids=created_post.tagged_user_ids if isinstance(created_post.tagged_user_ids, list) else [],
             actor_user=request.user,
@@ -623,6 +689,25 @@ class PostReactView(APIView):
         link_url = serializer.validated_data.get("link_url", "")
         attachments = serializer.validated_data.get("attachments", [])
         tagged_user_ids = serializer.validated_data.get("tagged_user_ids", [])
+        if bool(getattr(getattr(request.user, "profile", None), "is_banned", False)):
+            response_payload = {"detail": "Your account is banned and cannot post or interact."}
+            ai_log(status.HTTP_403_FORBIDDEN, response_payload)
+            return Response(response_payload, status=status.HTTP_403_FORBIDDEN)
+        content_creating_actions = {
+            PostInteraction.ActionType.REPLY,
+            PostInteraction.ActionType.REPOST,
+            PostInteraction.ActionType.QUOTE,
+        }
+        if action in content_creating_actions:
+            is_penalty_blocked, active_penalty_count = get_user_posting_restriction(user_id=request.user.id)
+            if is_penalty_blocked:
+                response_payload = {
+                    "detail": "Posting is restricted due to active moderation penalties.",
+                    "active_penalty_count": active_penalty_count,
+                }
+                ai_log(status.HTTP_403_FORBIDDEN, response_payload)
+                return Response(response_payload, status=status.HTTP_403_FORBIDDEN)
+
         post = build_post_queryset_for_user(request.user).filter(id=post_id).first()
         if not post:
             response_payload = {"detail": "Post not found."}
@@ -711,20 +796,41 @@ class PostReactView(APIView):
                 ai_log(status.HTTP_200_OK, response_payload)
                 return Response(response_payload)
             if action == PostInteraction.ActionType.REPORT:
-                ModerationFlag.objects.create(
-                    profile_id=getattr(request.user.profile, "id", None)
-                    if hasattr(request.user, "profile")
-                    else None,
+                report_details = str(content or "").strip()
+                existing_flag = ModerationFlag.objects.filter(
+                    reporter_user_id=request.user.id,
                     content_type="post",
                     content_id=post.id,
                     category="user_report",
-                    reason="User submitted report action",
-                    payload={"reported_by_user_id": request.user.id},
-                    policy_region=getattr(request.user.profile, "location", "global")
-                    if hasattr(request.user, "profile")
-                    else "global",
-                    policy_version="user-action",
-                )
+                    status=ModerationFlag.Status.PENDING,
+                ).first()
+                if not existing_flag:
+                    target_user_id = int(post.author_id)
+                    payload = {
+                        "reported_by_user_id": request.user.id,
+                        "target_user_id": target_user_id,
+                        "post_author_id": target_user_id,
+                        "post_author_username": post.author.username,
+                        "report_details": report_details,
+                    }
+                    if hasattr(post.author, "profile"):
+                        payload["target_profile_id"] = int(post.author.profile.id)
+                    ModerationFlag.objects.create(
+                        profile_id=getattr(request.user.profile, "id", None)
+                        if hasattr(request.user, "profile")
+                        else None,
+                        reporter_user_id=request.user.id,
+                        target_user_id=target_user_id,
+                        content_type="post",
+                        content_id=post.id,
+                        category="user_report",
+                        reason=report_details,
+                        payload=payload,
+                        policy_region=getattr(request.user.profile, "location", "global")
+                        if hasattr(request.user, "profile")
+                        else "global",
+                        policy_version="user-action",
+                    )
             if hasattr(request.user, "profile"):
                 is_false_report = action == PostInteraction.ActionType.REPORT and (
                     post_sentiment_label != "negative" and not post_is_toxic
@@ -778,6 +884,49 @@ class PostReactView(APIView):
             tagged_user_ids=tagged_user_ids,
             ip_address=request_ip_address,
         )
+        interaction.analysis_fingerprint = compute_interaction_fingerprint(
+            action_type=action,
+            post_id=post.id,
+            content=content,
+            link_url=link_url,
+            attachments=attachments,
+        )
+        inherited_rank_score = 0
+        delta_rank_score = 0
+        if action in {PostInteraction.ActionType.REPOST, PostInteraction.ActionType.QUOTE}:
+            inherited_rank_score = estimate_post_rank_score(post)
+            if action == PostInteraction.ActionType.QUOTE and (content or link_url or attachments):
+                quote_sentiment = score_sentiment_text(content)
+                delta_rank_score = int(
+                    score_feed_items(
+                        user_context={},
+                        candidate_posts=[
+                            {
+                                "id": interaction.id,
+                                "interest_tags": post.interest_tags if isinstance(post.interest_tags, list) else [],
+                                "like_count": 0,
+                                "reply_count": 0,
+                                "sentiment_score": float(quote_sentiment.score or 0.0),
+                                "author_profile_score": float(
+                                    getattr(getattr(request.user, "profile", None), "rank_overall_score", 0.0) or 0.0
+                                ),
+                            }
+                        ],
+                    )[0]["rank_score"]
+                )
+        interaction.inherited_rank_score = inherited_rank_score
+        interaction.delta_rank_score = delta_rank_score
+        interaction.analysis_status = Post.AnalysisStatus.APPROVED
+        interaction.analysis_completed_at = timezone.now()
+        interaction.save(
+            update_fields=[
+                "analysis_fingerprint",
+                "inherited_rank_score",
+                "delta_rank_score",
+                "analysis_status",
+                "analysis_completed_at",
+            ]
+        )
         if action in {PostInteraction.ActionType.REPLY, PostInteraction.ActionType.QUOTE} and (content or link_url):
             region_code = request.user.profile.location if hasattr(request.user, "profile") else "global"
             blocked, categories = is_content_blocked(
@@ -790,6 +939,10 @@ class PostReactView(APIView):
                 else None,
             )
             if blocked:
+                PostInteraction.objects.filter(id=interaction.id).update(
+                    analysis_status=Post.AnalysisStatus.BLOCKED,
+                    analysis_completed_at=timezone.now(),
+                )
                 interaction.delete()
                 response_payload = {
                     "detail": "Interaction content violates policy.",
@@ -843,6 +996,10 @@ class PostReactView(APIView):
                         attachment_payload["media_bytes"] = int(asset.media_bytes or 0)
                     MediaAttachment.objects.create(**attachment_payload)
                 reply_sentiment_label, reply_sentiment_score = score_post_sentiment(reply_post)
+                ensure_post_analysis(
+                    post=reply_post,
+                    region_code=region_code,
+                )
                 if hasattr(request.user, "profile"):
                     record_profile_action_score(
                         profile=request.user.profile,
@@ -957,7 +1114,7 @@ class UserPostListView(APIView):
         posts = (
             build_post_queryset_for_user(request.user)
             .filter(author_id=user_id, parent_post__isnull=True)
-            .order_by("-is_pinned", "-created_at")[:50]
+            .order_by("-is_pinned", "-created_at")
         )
         return Response([serialize_post_with_author(post, request, ensure_sentiment=False) for post in posts])
 
@@ -1047,7 +1204,10 @@ def _serialize_posts(serialized_posts: list[dict], queryset) -> list[dict]:
     for serialized in serialized_posts:
         post = mapped.get(serialized["id"])
         if post:
-            ensure_post_sentiment(post)
+            region_code = "global"
+            if hasattr(post.author, "profile"):
+                region_code = str(getattr(post.author.profile, "location", "global") or "global")
+            ensure_post_analysis(post=post, region_code=region_code)
             serialized["interaction_counts"] = {
                 "like": post.like_count,
                 "reply": post.reply_count,

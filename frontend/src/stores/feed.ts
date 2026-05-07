@@ -18,6 +18,10 @@ interface FeedState {
   hasMore: boolean;
   blockedAuthorIds: number[];
   pendingActionKeys: string[];
+  policyVersion: string;
+  prefetchedPageByCursor: Record<string, Awaited<ReturnType<typeof fetchFeed>>>;
+  prefetchAbortController: AbortController | null;
+  prefetchCursor: string | null;
 }
 
 interface LoadFeedOptions {
@@ -35,8 +39,63 @@ export const useFeedStore = defineStore("feed", {
     hasMore: true,
     blockedAuthorIds: [],
     pendingActionKeys: [],
+    policyVersion: "",
+    prefetchedPageByCursor: {},
+    prefetchAbortController: null,
+    prefetchCursor: null,
   }),
   actions: {
+    applyPrecomputedFeedMetadata(items: FeedItem[]) {
+      for (const item of items) {
+        if (item.item_type !== "post") {
+          continue;
+        }
+        const createdAt = String(item.data.created_at || "").trim();
+        const createdAtTimestamp = createdAt ? Date.parse(createdAt) : Number.NaN;
+        item.data.created_at_ts = Number.isFinite(createdAtTimestamp) ? createdAtTimestamp : 0;
+        item.data.has_media = Array.isArray(item.data.attachments) && item.data.attachments.length > 0;
+      }
+    },
+    resetPrefetchState() {
+      this.prefetchedPageByCursor = {};
+      this.prefetchCursor = null;
+      if (this.prefetchAbortController) {
+        this.prefetchAbortController.abort();
+      }
+      this.prefetchAbortController = null;
+    },
+    async prefetchNextPage() {
+      if (!this.nextCursor || !this.hasMore || this.isLoading) {
+        return;
+      }
+      const cursor = this.nextCursor;
+      if (this.prefetchedPageByCursor[cursor]) {
+        return;
+      }
+      if (this.prefetchCursor === cursor) {
+        return;
+      }
+      if (this.prefetchAbortController) {
+        this.prefetchAbortController.abort();
+      }
+      const controller = new AbortController();
+      this.prefetchAbortController = controller;
+      this.prefetchCursor = cursor;
+      try {
+        const response = await fetchFeed(this.mode, cursor, this.interestTag, null, controller.signal);
+        this.applyPrecomputedFeedMetadata(response.items);
+        this.prefetchedPageByCursor[cursor] = response;
+      } catch {
+        // Silent: prefetch is best-effort only.
+      } finally {
+        if (this.prefetchCursor === cursor) {
+          this.prefetchCursor = null;
+        }
+        if (this.prefetchAbortController === controller) {
+          this.prefetchAbortController = null;
+        }
+      }
+    },
     isActionPending(key: string): boolean {
       return this.pendingActionKeys.includes(key);
     },
@@ -97,6 +156,21 @@ export const useFeedStore = defineStore("feed", {
     buildFeedCacheKey(): string {
       return `${this.mode}:${this.interestTag || "none"}`;
     },
+    getFeedSessionKey(): string {
+      if (typeof window === "undefined") {
+        return "server";
+      }
+      try {
+        const rawAuth = window.localStorage.getItem("unite_auth");
+        if (!rawAuth) {
+          return "anonymous";
+        }
+        const parsed = JSON.parse(rawAuth) as { username?: string };
+        return String(parsed.username || "anonymous");
+      } catch {
+        return "anonymous";
+      }
+    },
     async loadConfig() {
       this.config = await fetchFeedConfig();
     },
@@ -117,25 +191,42 @@ export const useFeedStore = defineStore("feed", {
       let hasCachedFallback = false;
       try {
         if (reset) {
-          const cached = readCachedFeed(this.buildFeedCacheKey());
+          this.resetPrefetchState();
+          const cached = readCachedFeed(
+            this.buildFeedCacheKey(),
+            this.policyVersion || "default",
+            this.getFeedSessionKey(),
+          );
           if (cached) {
             this.items = cached.items;
+            this.applyPrecomputedFeedMetadata(this.items);
             this.nextCursor = cached.nextCursor;
             this.hasMore = cached.hasMore;
             hasCachedFallback = true;
           }
         }
         const cursor = reset ? null : this.nextCursor;
-        const response = await fetchFeed(this.mode, cursor, this.interestTag);
+        const prefetched = cursor ? this.prefetchedPageByCursor[cursor] : null;
+        const response = prefetched || (await fetchFeed(this.mode, cursor, this.interestTag));
+        if (cursor) {
+          delete this.prefetchedPageByCursor[cursor];
+        }
+        this.applyPrecomputedFeedMetadata(response.items);
         this.items = reset ? response.items : [...this.items, ...response.items];
         this.nextCursor = response.next_cursor;
         this.hasMore = response.has_more;
+        this.policyVersion = String(response.policy_version || this.policyVersion || "default");
         if (reset) {
           writeCachedFeed(this.buildFeedCacheKey(), {
             items: this.items,
             nextCursor: this.nextCursor,
             hasMore: this.hasMore,
+            policyVersion: this.policyVersion || "default",
+            sessionKey: this.getFeedSessionKey(),
           });
+        }
+        if (this.hasMore) {
+          void this.prefetchNextPage();
         }
       } catch (error: unknown) {
         if (axios.isAxiosError(error) && Number(error.response?.status || 0) === 401) {
@@ -151,8 +242,10 @@ export const useFeedStore = defineStore("feed", {
     },
     async setMode(mode: FeedMode) {
       this.mode = mode;
+      this.interestTag = null;
       this.nextCursor = null;
       this.hasMore = true;
+      this.resetPrefetchState();
       await this.loadFeed(true);
     },
     async setInterestMode(tag: string) {
@@ -160,6 +253,7 @@ export const useFeedStore = defineStore("feed", {
       this.mode = "interest";
       this.nextCursor = null;
       this.hasMore = true;
+      this.resetPrefetchState();
       await this.loadFeed(true);
     },
     async loadNextPage() {
@@ -271,6 +365,18 @@ export const useFeedStore = defineStore("feed", {
         });
       } catch {
         // Ignore local rollback to avoid jumping counts during temporary failures.
+      } finally {
+        this.endAction(actionKey);
+      }
+    },
+    async reportPost(postId: number, details: string) {
+      const actionKey = `report:${postId}`;
+      if (this.isActionPending(actionKey)) {
+        return;
+      }
+      this.beginAction(actionKey);
+      try {
+        await reactToPost(postId, { action: "report", content: details });
       } finally {
         this.endAction(actionKey);
       }

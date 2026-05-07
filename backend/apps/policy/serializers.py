@@ -12,6 +12,9 @@ class PolicyResolveResponseSerializer(serializers.Serializer):
     region_code = serializers.CharField()
     version = serializers.CharField()
     prohibited_categories = serializers.ListField(child=serializers.CharField())
+    allowed_exceptions = serializers.ListField(child=serializers.CharField())
+    media_thresholds = serializers.DictField(child=serializers.FloatField(), required=False)
+    provider_overrides = serializers.DictField(child=serializers.CharField(), required=False)
     rollout_percentage = serializers.IntegerField()
     source = serializers.CharField()
 
@@ -24,6 +27,9 @@ class PolicyPackSerializer(serializers.ModelSerializer):
             "region_code",
             "version",
             "prohibited_categories",
+            "allowed_exceptions",
+            "media_thresholds",
+            "provider_overrides",
             "enabled",
             "rollout_percentage",
             "effective_from",

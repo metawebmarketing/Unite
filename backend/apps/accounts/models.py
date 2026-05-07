@@ -41,6 +41,9 @@ class Profile(models.Model):
     rank_action_scores = models.JSONField(default=dict, blank=True)
     rank_last_500_count = models.PositiveIntegerField(default=0)
     rank_provider = models.CharField(max_length=64, blank=True, default="")
+    is_banned = models.BooleanField(default=False)
+    banned_at = models.DateTimeField(null=True, blank=True)
+    banned_reason = models.CharField(max_length=255, blank=True, default="")
     date_of_birth = models.DateField(null=True, blank=True)
     gender = models.CharField(max_length=32, choices=Gender.choices, blank=True, default="")
     gender_self_describe = models.CharField(max_length=120, blank=True, default="")
@@ -115,6 +118,7 @@ class SiteSetting(models.Model):
     user_connection_limit = models.PositiveIntegerField(null=True, blank=True)
     post_reply_share_char_cap = models.PositiveIntegerField(null=True, blank=True)
     daily_post_reply_share_limit = models.PositiveIntegerField(null=True, blank=True)
+    penalty_expiry_days = models.PositiveIntegerField(null=True, blank=True)
     media_storage_mode = models.CharField(
         max_length=16,
         choices=MediaStorageMode.choices,
@@ -124,6 +128,9 @@ class SiteSetting(models.Model):
     media_public_base_url = models.URLField(blank=True, default="")
     post_video_max_upload_bytes = models.PositiveIntegerField(null=True, blank=True)
     post_video_max_duration_seconds = models.PositiveIntegerField(null=True, blank=True)
+    feed_date_lookback_hours = models.PositiveIntegerField(null=True, blank=True)
+    feed_fallback_date_lookback_hours = models.PositiveIntegerField(null=True, blank=True)
+    feed_fallback_post_count = models.PositiveIntegerField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:

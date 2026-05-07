@@ -21,6 +21,9 @@ class PolicyApiTests(APITestCase):
                 "region_code": "us",
                 "version": "v2",
                 "prohibited_categories": ["harassment"],
+                "allowed_exceptions": ["artwork_non_graphic_nudity"],
+                "provider_overrides": {"image": "siglip2"},
+                "media_thresholds": {"harassment": 0.8},
                 "enabled": True,
                 "rollout_percentage": 50,
                 "effective_from": timezone.now().isoformat(),
@@ -50,6 +53,7 @@ class PolicyApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["version"], "v3")
         self.assertEqual(response.data["source"], "policy_pack")
+        self.assertIn("allowed_exceptions", response.data)
 
     def test_resolve_policy_falls_back_to_global_pack(self):
         PolicyPack.objects.create(
@@ -72,6 +76,8 @@ class PolicyApiTests(APITestCase):
         non_staff = User.objects.create_user(username="policy_member", password="Password123!")
         Profile.objects.create(user=non_staff, display_name="PolicyMember")
         self.client.force_authenticate(user=non_staff)
+        list_response = self.client.get("/api/v1/policy/packs")
+        self.assertEqual(list_response.status_code, 403)
         response = self.client.post(
             "/api/v1/policy/packs",
             {

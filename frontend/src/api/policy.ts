@@ -5,6 +5,9 @@ export interface PolicyPack {
   region_code: string;
   version: string;
   prohibited_categories: string[];
+  allowed_exceptions: string[];
+  media_thresholds: Record<string, number>;
+  provider_overrides: Record<string, string>;
   enabled: boolean;
   rollout_percentage: number;
   effective_from: string;
@@ -16,6 +19,9 @@ export interface PolicyResolveResponse {
   region_code: string;
   version: string;
   prohibited_categories: string[];
+  allowed_exceptions: string[];
+  media_thresholds: Record<string, number>;
+  provider_overrides: Record<string, string>;
   rollout_percentage: number;
   source: string;
 }

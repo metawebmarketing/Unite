@@ -98,12 +98,25 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "unite-cache",
+UNITE_CACHE_BACKEND = str(os.getenv("UNITE_CACHE_BACKEND", "locmem")).strip().lower()
+UNITE_CACHE_KEY_PREFIX = str(os.getenv("UNITE_CACHE_KEY_PREFIX", "unite")).strip() or "unite"
+if UNITE_CACHE_BACKEND == "redis":
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": os.getenv("UNITE_CACHE_REDIS_URL", "redis://localhost:6379/2"),
+            "KEY_PREFIX": UNITE_CACHE_KEY_PREFIX,
+            "TIMEOUT": int(os.getenv("UNITE_CACHE_DEFAULT_TIMEOUT_SECONDS", "300")),
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "unite-cache",
+            "KEY_PREFIX": UNITE_CACHE_KEY_PREFIX,
+        }
+    }
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -147,6 +160,16 @@ UNITE_SUGGESTION_INTERVAL = 3
 UNITE_AD_INTERVAL = 0
 UNITE_MAX_INJECTION_RATIO = 0.5
 UNITE_FEED_CACHE_TTL_SECONDS = 30
+UNITE_FEED_FRESHNESS_WINDOW_HOURS = int(os.getenv("UNITE_FEED_FRESHNESS_WINDOW_HOURS", "168"))
+UNITE_FEED_INTEREST_FRESHNESS_WINDOW_HOURS = int(os.getenv("UNITE_FEED_INTEREST_FRESHNESS_WINDOW_HOURS", "336"))
+UNITE_FEED_FALLBACK_LOOKBACK_HOURS = int(os.getenv("UNITE_FEED_FALLBACK_LOOKBACK_HOURS", "720"))
+UNITE_FEED_FALLBACK_POST_COUNT = int(os.getenv("UNITE_FEED_FALLBACK_POST_COUNT", "100"))
+UNITE_FEED_MAX_CANDIDATES = int(os.getenv("UNITE_FEED_MAX_CANDIDATES", "250"))
+UNITE_FEED_MIN_RANK_SCORE = int(os.getenv("UNITE_FEED_MIN_RANK_SCORE", "-250"))
+UNITE_FEED_NEXT_CURSOR_PREFETCH_ENABLED = str(
+    os.getenv("UNITE_FEED_NEXT_CURSOR_PREFETCH_ENABLED", "true")
+).strip().lower() in {"1", "true", "yes", "on"}
+UNITE_FEED_NEXT_CURSOR_PREFETCH_PAGE_SIZE = int(os.getenv("UNITE_FEED_NEXT_CURSOR_PREFETCH_PAGE_SIZE", "20"))
 UNITE_FRONTEND_BASE_URL = "http://localhost:5173"
 UNITE_SITE_NAME = "Unite"
 UNITE_SUPPORT_EMAIL = "support@unite.local"
@@ -201,10 +224,41 @@ UNITE_SENTIMENT_RANKING_PROVIDER = "cardiff_local"
 UNITE_SENTIMENT_MODEL_NAME = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 UNITE_SENTIMENT_MODEL_PATH = ""
 UNITE_SENTIMENT_LOCAL_FILES_ONLY = True
+UNITE_MEDIA_ENABLE_MODEL_INFERENCE = str(
+    os.getenv("UNITE_MEDIA_ENABLE_MODEL_INFERENCE", "true")
+).strip().lower() in {"1", "true", "yes", "on"}
+UNITE_MEDIA_LOCAL_FILES_ONLY = str(
+    os.getenv("UNITE_MEDIA_LOCAL_FILES_ONLY", "false")
+).strip().lower() in {"1", "true", "yes", "on"}
+UNITE_MEDIA_IMAGE_PROVIDER = os.getenv("UNITE_MEDIA_IMAGE_PROVIDER", "siglip2").strip().lower() or "siglip2"
+UNITE_MEDIA_VIDEO_PROVIDER = os.getenv("UNITE_MEDIA_VIDEO_PROVIDER", "videomae").strip().lower() or "videomae"
+UNITE_MEDIA_IMAGE_MODEL_NAME = os.getenv(
+    "UNITE_MEDIA_IMAGE_MODEL_NAME",
+    "google/siglip2-base-patch16-224",
+).strip()
+UNITE_MEDIA_VIDEO_MODEL_NAME = os.getenv(
+    "UNITE_MEDIA_VIDEO_MODEL_NAME",
+    "MCG-NJU/videomae-base-finetuned-kinetics",
+).strip()
+UNITE_MEDIA_IMAGE_CANDIDATE_LABELS = [
+    "graphic violence",
+    "non graphic violence",
+    "pornographic nudity",
+    "non graphic nudity artwork",
+    "video game scene",
+    "child sexual exploitative material",
+    "sports",
+    "technology",
+    "nature",
+    "people",
+]
 UNITE_FEED_SUPPRESSED_CATEGORIES = [
     "csam_csem",
     "credible_violence",
     "illegal_promotion",
+    "graphic_violence",
+    "nudity_pornographic",
+    "child_sexual_exploitative",
 ]
 UNITE_PROFILE_IMAGE_SIZE = 256
 UNITE_POST_IMAGE_MAX_BYTES = 5 * 1024 * 1024
@@ -219,6 +273,7 @@ UNITE_IP_COUNTRY_LOOKUP_URL_TEMPLATE = "http://ip-api.com/json/{ip}?fields=statu
 UNITE_USER_CONNECTION_LIMIT = 7500
 UNITE_POST_REPLY_SHARE_CHAR_CAP = 500
 UNITE_DAILY_POST_REPLY_SHARE_LIMIT = 250
+UNITE_PENALTY_EXPIRY_DAYS = int(os.getenv("UNITE_PENALTY_EXPIRY_DAYS", "90"))
 UNITE_MEDIA_STORAGE_MODE = os.getenv("UNITE_MEDIA_STORAGE_MODE", "local").strip().lower() or "local"
 UNITE_MEDIA_PUBLIC_BASE_URL = os.getenv("UNITE_MEDIA_PUBLIC_BASE_URL", "").strip().rstrip("/")
 UNITE_MEDIA_S3_STORAGE_ALIAS = os.getenv("UNITE_MEDIA_S3_STORAGE_ALIAS", "media_s3").strip() or "media_s3"

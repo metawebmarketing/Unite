@@ -62,6 +62,8 @@ const algorithmStatus = ref<string | null>(null);
 const trackedAdImpressions = new Set<string>();
 const demoActionStatus = ref("");
 const isResettingDemo = ref(false);
+const isResettingFeedCache = ref(false);
+const feedCacheResetStatus = ref("");
 const installSeedStatus = ref("");
 const demoSeedTotalUsers = ref(1000);
 const demoSeedPostsPerUser = ref(10);
@@ -82,6 +84,8 @@ const connectionStatusByUserId = ref<Record<number, boolean>>({});
 const relationshipStatusByUserId = ref<Record<number, string>>({});
 const showReplyModal = ref(false);
 const showShareModal = ref(false);
+const showReportModal = ref(false);
+const showReportWarningModal = ref(false);
 const replyDraft = ref("");
 const replyLinkDraft = ref("");
 const replyTargetPostId = ref<number | null>(null);
@@ -185,6 +189,9 @@ function resolveVideoPoster(attachment: PostAttachment): string | undefined {
 }
 const showCopyLinkModal = ref(false);
 const copyLinkFallbackValue = ref("");
+const reportTargetPostId = ref<number | null>(null);
+const reportDetailsDraft = ref("");
+const isSubmittingReport = ref(false);
 const showInAppBrowser = ref(false);
 const inAppBrowserUrl = ref("");
 const feedOrdering = ref<"default" | "date_cluster">("default");
@@ -237,6 +244,7 @@ onMounted(async () => {
   }
   try {
     await feedStore.loadFeed(true);
+    void feedStore.prefetchNextPage();
     await trackVisibleAdImpressions();
   } catch {
     // Initial load failures should not disable scrolling observers.
@@ -371,6 +379,7 @@ function formatScore(value: unknown): string {
 }
 
 async function trackVisibleAdImpressions() {
+  const pendingEvents: Array<Promise<void>> = [];
   for (const item of feedStore.items) {
     if (item.item_type !== "ad") {
       continue;
@@ -380,15 +389,18 @@ async function trackVisibleAdImpressions() {
       continue;
     }
     trackedAdImpressions.add(adEventKey);
-    try {
-      await sendAdEvent({
+    pendingEvents.push(
+      sendAdEvent({
         event_type: "impression",
         ad_event_key: adEventKey,
         placement: String(item.data.placement || "feed"),
-      });
-    } catch {
-      trackedAdImpressions.delete(adEventKey);
-    }
+      }).catch(() => {
+        trackedAdImpressions.delete(adEventKey);
+      }),
+    );
+  }
+  if (pendingEvents.length > 0) {
+    await Promise.all(pendingEvents);
   }
 }
 
@@ -404,6 +416,30 @@ function updateVirtualWindow() {
   const visibleCount = Math.ceil(viewportHeight / estimatedItemHeightPx) + 24;
   virtualWindowStart.value = firstVisibleIndex;
   virtualWindowEnd.value = Math.min(displayFeedItems.value.length, firstVisibleIndex + visibleCount);
+  const remainingItems = displayFeedItems.value.length - virtualWindowEnd.value;
+  if (remainingItems < 18) {
+    void feedStore.prefetchNextPage();
+  }
+}
+
+function feedItemRenderKey(item: { item_type: string; data: Record<string, unknown> }, index: number): string {
+  if (item.item_type === "post") {
+    const postId = Number(item.data.id || 0);
+    if (postId > 0) {
+      return `post-${postId}`;
+    }
+  }
+  if (item.item_type === "suggestion") {
+    const userId = Number(item.data.user_id || 0);
+    if (userId > 0) {
+      return `suggestion-${userId}`;
+    }
+  }
+  const adEventKey = String(item.data.ad_event_key || "");
+  if (item.item_type === "ad" && adEventKey) {
+    return `ad-${adEventKey}`;
+  }
+  return `${item.item_type}-${index}`;
 }
 
 function placeholderAvatar(name: string) {
@@ -653,6 +689,48 @@ async function onRepost(postId: number) {
 
 async function onBookmark(postId: number) {
   await feedStore.toggleReaction(postId, "bookmark");
+}
+
+async function onReport(postId: number) {
+  reportTargetPostId.value = postId;
+  reportDetailsDraft.value = "";
+  showReportModal.value = true;
+  closePostMenu();
+}
+
+function closeReportModal() {
+  showReportModal.value = false;
+  reportTargetPostId.value = null;
+  reportDetailsDraft.value = "";
+}
+
+function submitReportDetailsModal() {
+  if (!reportDetailsDraft.value.trim()) {
+    return;
+  }
+  showReportModal.value = false;
+  showReportWarningModal.value = true;
+}
+
+function closeReportWarningModal() {
+  showReportWarningModal.value = false;
+  reportTargetPostId.value = null;
+  reportDetailsDraft.value = "";
+}
+
+async function confirmReportSubmission() {
+  const postId = reportTargetPostId.value;
+  const reportDetails = reportDetailsDraft.value.trim();
+  if (!postId || !reportDetails || isSubmittingReport.value) {
+    return;
+  }
+  isSubmittingReport.value = true;
+  try {
+    await feedStore.reportPost(postId, reportDetails);
+    closeReportWarningModal();
+  } finally {
+    isSubmittingReport.value = false;
+  }
 }
 
 async function submitReplyModal() {
@@ -1052,6 +1130,22 @@ async function resetAndRegenerateDemo() {
   }
 }
 
+async function resetFeedCacheForDebugging() {
+  feedCacheResetStatus.value = "";
+  isResettingFeedCache.value = true;
+  try {
+    await clearAllFeedCaches();
+    await feedStore.loadFeed(true, { force: true });
+    await trackVisibleAdImpressions();
+    updateVirtualWindow();
+    feedCacheResetStatus.value = "Feed cache cleared. Feed reloaded with fresh data.";
+  } catch {
+    feedCacheResetStatus.value = "Unable to clear feed cache due to a network or server error.";
+  } finally {
+    isResettingFeedCache.value = false;
+  }
+}
+
 watch(
   () => route.query.modal,
   () => {
@@ -1083,10 +1177,12 @@ watch(
 );
 
 watch(
-  [activeModal, showDemoProgressModal, showReplyModal, showShareModal, showCopyLinkModal],
-  ([modalValue, progressModalValue, replyModalValue, shareModalValue, copyModalValue]) => {
+  [activeModal, showDemoProgressModal, showReplyModal, showShareModal, showCopyLinkModal, showReportModal, showReportWarningModal],
+  ([modalValue, progressModalValue, replyModalValue, shareModalValue, copyModalValue, reportModalValue, reportWarningValue]) => {
     document.body.style.overflow =
-      modalValue || progressModalValue || replyModalValue || shareModalValue || copyModalValue ? "hidden" : "";
+      modalValue || progressModalValue || replyModalValue || shareModalValue || copyModalValue || reportModalValue || reportWarningValue
+        ? "hidden"
+        : "";
   },
   { immediate: true },
 );
@@ -1287,6 +1383,10 @@ function onLogout() {
         </svg>
         <span class="nav-link-label">Settings</span>
       </RouterLink>
+      <RouterLink v-if="authStore.isStaff" to="/moderation" class="nav-icon-link" title="Moderation Queue" aria-label="Moderation Queue">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M12 3l8 4v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V7l8-4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 12.5 10.5 15 16 9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="nav-link-label">Moderation</span>
+      </RouterLink>
       <RouterLink v-if="authStore.isStaff" to="/ads-lab" class="nav-icon-link" title="Ads Lab" aria-label="Ads Lab">
         <svg viewBox="0 0 24 24" class="icon"><path d="M4 14v4h3l5 3V3l-5 3H4v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 9a4 4 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <span class="nav-link-label">Ads</span>
@@ -1377,7 +1477,7 @@ function onLogout() {
       <div v-if="virtualTopSpacerPx > 0" :style="{ height: `${virtualTopSpacerPx}px` }" />
       <article
         v-for="{ item, index } in visibleFeedEntries"
-        :key="`${item.item_type}-${index}`"
+        :key="feedItemRenderKey(item, index)"
         class="feed-item"
         :class="{ 'clickable-post-card': item.item_type === 'post' }"
         @click="onFeedItemClick(item, $event)"
@@ -1454,6 +1554,13 @@ function onLogout() {
                 </button>
                 <button type="button" @click.stop="onToggleBlock(Number(item.data.author_id || 0), $event)">
                   {{ relationshipStatusByUserId[Number(item.data.author_id || 0)] === "blocked" ? "Unblock" : "Block" }}
+                </button>
+                <button
+                  v-if="!isOwnUsername(String(item.data.author_username || ''))"
+                  type="button"
+                  @click.stop="onReport(Number(item.data.id || 0))"
+                >
+                  Report
                 </button>
               </div>
             </div>
@@ -1716,8 +1823,12 @@ function onLogout() {
           <button @click="resetAndRegenerateDemo" :disabled="isResettingDemo">
             {{ isResettingDemo ? "Resetting demo data..." : "Reset & regenerate demo data" }}
           </button>
+          <button @click="resetFeedCacheForDebugging" :disabled="isResettingFeedCache">
+            {{ isResettingFeedCache ? "Resetting feed cache..." : "Reset feed cache" }}
+          </button>
           <p v-if="installSeedStatus">Seed status: {{ installSeedStatus }}</p>
           <p v-if="demoActionStatus">{{ demoActionStatus }}</p>
+          <p v-if="feedCacheResetStatus">{{ feedCacheResetStatus }}</p>
         </template>
       </template>
       <h2>Top Interests</h2>
@@ -1866,6 +1977,36 @@ function onLogout() {
         <input :value="copyLinkFallbackValue" readonly />
         <div class="modal-actions">
           <button type="button" @click="closeCopyLinkModal">Close</button>
+        </div>
+      </section>
+    </div>
+    <div v-if="showReportModal" class="modal-overlay" @click.self="closeReportModal">
+      <section class="auth-card modal-card">
+        <h2>Report conversation</h2>
+        <p>Please describe what policy issue you are reporting.</p>
+        <textarea
+          v-model="reportDetailsDraft"
+          rows="5"
+          maxlength="500"
+          placeholder="Required: include context for moderation review."
+        />
+        <div class="modal-actions">
+          <button type="button" @click="closeReportModal">Cancel</button>
+          <button type="button" :disabled="!reportDetailsDraft.trim()" @click="submitReportDetailsModal">
+            Submit report
+          </button>
+        </div>
+      </section>
+    </div>
+    <div v-if="showReportWarningModal" class="modal-overlay" @click.self="closeReportWarningModal">
+      <section class="auth-card modal-card">
+        <h2>Confirm report submission</h2>
+        <p>False reports can result in moderation penalties on your account.</p>
+        <div class="modal-actions">
+          <button type="button" :disabled="isSubmittingReport" @click="closeReportWarningModal">Back</button>
+          <button type="button" :disabled="isSubmittingReport" @click="confirmReportSubmission">
+            {{ isSubmittingReport ? "Submitting..." : "I understand, submit report" }}
+          </button>
         </div>
       </section>
     </div>

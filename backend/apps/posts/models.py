@@ -6,6 +6,13 @@ User = get_user_model()
 
 
 class Post(models.Model):
+    class AnalysisStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        APPROVED = "approved", "Approved"
+        BLOCKED = "blocked", "Blocked"
+        FAILED = "failed", "Failed"
+
     class Visibility(models.TextChoices):
         PUBLIC = "public", "Public"
         CONNECTIONS = "connections", "Connections"
@@ -25,6 +32,18 @@ class Post(models.Model):
     sentiment_label = models.CharField(max_length=16, default="neutral")
     sentiment_score = models.FloatField(default=0.0)
     sentiment_needs_rescore = models.BooleanField(default=False)
+    analysis_status = models.CharField(
+        max_length=16,
+        choices=AnalysisStatus.choices,
+        default=AnalysisStatus.PENDING,
+    )
+    analysis_version = models.PositiveIntegerField(default=1)
+    analysis_fingerprint = models.CharField(max_length=128, blank=True, default="")
+    analysis_terms = models.JSONField(default=list, blank=True)
+    analysis_blocked_categories = models.JSONField(default=list, blank=True)
+    analysis_modules = models.JSONField(default=dict, blank=True)
+    analysis_completed_at = models.DateTimeField(null=True, blank=True)
+    needs_analysis_refresh = models.BooleanField(default=True)
     is_pinned = models.BooleanField(default=False)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -35,6 +54,8 @@ class Post(models.Model):
         indexes = [
             models.Index(fields=["author", "-created_at"]),
             models.Index(fields=["parent_post", "-created_at"]),
+            models.Index(fields=["parent_post", "visibility", "-created_at", "-id"]),
+            models.Index(fields=["author", "parent_post", "-is_pinned", "-created_at"]),
         ]
 
     def __str__(self) -> str:
@@ -60,6 +81,13 @@ class MediaAttachment(models.Model):
 
 
 class UploadedMediaAsset(models.Model):
+    class AnalysisStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        APPROVED = "approved", "Approved"
+        BLOCKED = "blocked", "Blocked"
+        FAILED = "failed", "Failed"
+
     class ProcessingStatus(models.TextChoices):
         PROCESSING = "processing", "Processing"
         READY = "ready", "Ready"
@@ -72,6 +100,22 @@ class UploadedMediaAsset(models.Model):
     hls_manifest_url = models.URLField(blank=True, default="")
     media_bytes = models.PositiveBigIntegerField(default=0)
     processing_status = models.CharField(max_length=16, choices=ProcessingStatus.choices, default=ProcessingStatus.READY)
+    analysis_status = models.CharField(
+        max_length=16,
+        choices=AnalysisStatus.choices,
+        default=AnalysisStatus.PENDING,
+    )
+    analysis_version = models.PositiveIntegerField(default=1)
+    analysis_fingerprint = models.CharField(max_length=128, blank=True, default="")
+    analysis_terms = models.JSONField(default=list, blank=True)
+    analysis_categories = models.JSONField(default=list, blank=True)
+    analysis_payload = models.JSONField(default=dict, blank=True)
+    analysis_provider = models.CharField(max_length=64, blank=True, default="")
+    analysis_model_name = models.CharField(max_length=128, blank=True, default="")
+    analysis_completed_at = models.DateTimeField(null=True, blank=True)
+    needs_analysis_refresh = models.BooleanField(default=True)
+    is_artwork_source = models.BooleanField(default=False)
+    is_video_game_capture = models.BooleanField(default=False)
     storage_mode = models.CharField(max_length=16, blank=True, default="")
     storage_saved_name = models.CharField(max_length=500, blank=True, default="")
     thumbnail_saved_name = models.CharField(max_length=500, blank=True, default="")
@@ -105,6 +149,15 @@ class PostInteraction(models.Model):
     link_url = models.URLField(blank=True)
     attachments = models.JSONField(default=list, blank=True)
     tagged_user_ids = models.JSONField(default=list, blank=True)
+    analysis_status = models.CharField(
+        max_length=16,
+        choices=Post.AnalysisStatus.choices,
+        default=Post.AnalysisStatus.PENDING,
+    )
+    analysis_fingerprint = models.CharField(max_length=128, blank=True, default="")
+    analysis_completed_at = models.DateTimeField(null=True, blank=True)
+    inherited_rank_score = models.IntegerField(default=0)
+    delta_rank_score = models.IntegerField(default=0)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

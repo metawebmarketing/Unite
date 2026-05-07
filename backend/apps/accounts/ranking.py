@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from hashlib import sha256
 
 from django.db import transaction
 
@@ -48,14 +49,31 @@ def score_post_sentiment(post: Post) -> tuple[str, float]:
 def ensure_post_sentiment(post: Post) -> tuple[str, float]:
     current_label = str(post.sentiment_label or "").strip().lower()
     current_score = float(post.sentiment_score or 0.0)
+    content_signature = sha256(f"{post.content or ''}|{post.link_url or ''}".encode("utf-8")).hexdigest()
+    modules = dict(getattr(post, "analysis_modules", {}) or {})
+    sentiment_meta = dict(modules.get("sentiment") or {})
+    if sentiment_meta.get("fingerprint") == content_signature and sentiment_meta.get("completed"):
+        if current_label in {"positive", "neutral", "negative"}:
+            return current_label, current_score
     if bool(getattr(post, "sentiment_needs_rescore", False)):
-        return score_post_sentiment(post)
-    if current_label not in {"positive", "neutral", "negative"}:
-        return score_post_sentiment(post)
-    if current_label == "neutral" and current_score == 0.0:
+        label, score = score_post_sentiment(post)
+    elif current_label not in {"positive", "neutral", "negative"}:
+        label, score = score_post_sentiment(post)
+    elif current_label == "neutral" and current_score == 0.0:
         # Legacy/seeded rows may have default neutral values without scoring.
-        return score_post_sentiment(post)
-    return current_label, current_score
+        label, score = score_post_sentiment(post)
+    else:
+        label, score = current_label, current_score
+
+    modules["sentiment"] = {
+        "fingerprint": content_signature,
+        "completed": True,
+        "label": label,
+    }
+    if hasattr(post, "analysis_modules"):
+        Post.objects.filter(id=post.id).update(analysis_modules=modules)
+        post.analysis_modules = modules
+    return label, score
 
 
 def get_sentiment_provider_name() -> str:

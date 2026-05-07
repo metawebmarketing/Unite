@@ -4,6 +4,8 @@ interface CachedFeedPage {
   items: FeedItem[];
   nextCursor: string | null;
   hasMore: boolean;
+  policyVersion: string;
+  sessionKey: string;
   cachedAt: number;
 }
 
@@ -11,7 +13,7 @@ const FEED_CACHE_PREFIX = "unite:feed-cache:";
 const FEED_CACHE_TTL_MS = 60_000;
 const FEED_SW_CACHE_NAMES = ["unite-feed-v1", "unite-feed-v2"];
 
-export function readCachedFeed(cacheKey: string): CachedFeedPage | null {
+export function readCachedFeed(cacheKey: string, policyVersion: string, sessionKey: string): CachedFeedPage | null {
   try {
     const raw = localStorage.getItem(`${FEED_CACHE_PREFIX}${cacheKey}`);
     if (!raw) {
@@ -19,6 +21,12 @@ export function readCachedFeed(cacheKey: string): CachedFeedPage | null {
     }
     const parsed = JSON.parse(raw) as CachedFeedPage;
     if (Date.now() - parsed.cachedAt > FEED_CACHE_TTL_MS) {
+      return null;
+    }
+    if (String(parsed.policyVersion || "") !== String(policyVersion || "")) {
+      return null;
+    }
+    if (String(parsed.sessionKey || "") !== String(sessionKey || "")) {
       return null;
     }
     return parsed;

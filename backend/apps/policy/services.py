@@ -11,6 +11,15 @@ DEFAULT_CATEGORIES = [
     "harassment",
     "illegal_promotion",
     "credible_violence",
+    "graphic_violence",
+    "nudity_pornographic",
+    "child_sexual_exploitative",
+]
+DEFAULT_ALLOWED_EXCEPTIONS = [
+    "artwork_non_graphic_nudity",
+    "artwork_non_graphic_violence",
+    "video_game_non_graphic_nudity",
+    "video_game_non_graphic_violence",
 ]
 
 
@@ -19,6 +28,9 @@ class ResolvedPolicy:
     region_code: str
     version: str
     prohibited_categories: list[str]
+    allowed_exceptions: list[str]
+    media_thresholds: dict[str, float]
+    provider_overrides: dict[str, str]
     rollout_percentage: int
     source: str
 
@@ -61,6 +73,9 @@ def resolve_policy(
                     region_code=pack.region_code,
                     version=pack.version,
                     prohibited_categories=list(pack.prohibited_categories),
+                    allowed_exceptions=list(pack.allowed_exceptions or []),
+                    media_thresholds=dict(pack.media_thresholds or {}),
+                    provider_overrides=dict(pack.provider_overrides or {}),
                     rollout_percentage=pack.rollout_percentage,
                     source="policy_pack",
                 )
@@ -69,6 +84,9 @@ def resolve_policy(
         region_code=resolved_region,
         version="default-v1",
         prohibited_categories=DEFAULT_CATEGORIES,
+        allowed_exceptions=DEFAULT_ALLOWED_EXCEPTIONS,
+        media_thresholds={},
+        provider_overrides={},
         rollout_percentage=100,
         source="default",
     )

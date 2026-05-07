@@ -239,6 +239,9 @@ class AccountsApiTests(APITestCase):
         self.assertIn("media_public_base_url", get_response.data)
         self.assertIn("post_video_max_upload_bytes", get_response.data)
         self.assertIn("post_video_max_duration_seconds", get_response.data)
+        self.assertIn("feed_date_lookback_hours", get_response.data)
+        self.assertIn("feed_fallback_date_lookback_hours", get_response.data)
+        self.assertIn("feed_fallback_post_count", get_response.data)
 
         patch_response = self.client.patch(
             "/api/v1/auth/site-settings",
@@ -268,6 +271,9 @@ class AccountsApiTests(APITestCase):
                 "media_public_base_url": "https://media.unite.example",
                 "post_video_max_upload_bytes": 52428800,
                 "post_video_max_duration_seconds": 300,
+                "feed_date_lookback_hours": 168,
+                "feed_fallback_date_lookback_hours": 720,
+                "feed_fallback_post_count": 100,
             },
             format="json",
         )
@@ -286,6 +292,9 @@ class AccountsApiTests(APITestCase):
         self.assertEqual(str(patch_response.data["media_public_base_url"]), "https://media.unite.example")
         self.assertEqual(int(patch_response.data["post_video_max_upload_bytes"]), 52428800)
         self.assertEqual(int(patch_response.data["post_video_max_duration_seconds"]), 300)
+        self.assertEqual(int(patch_response.data["feed_date_lookback_hours"]), 168)
+        self.assertEqual(int(patch_response.data["feed_fallback_date_lookback_hours"]), 720)
+        self.assertEqual(int(patch_response.data["feed_fallback_post_count"]), 100)
         self.assertNotIn("email_host_password", patch_response.data)
         self.assertTrue(bool(patch_response.data["has_email_host_password"]))
 

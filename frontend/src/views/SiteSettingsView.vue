@@ -36,10 +36,14 @@ const settingsForm = reactive({
   user_connection_limit: 7500,
   post_reply_share_char_cap: 500,
   daily_post_reply_share_limit: 250,
+  penalty_expiry_days: 90,
   media_storage_mode: "local" as "local" | "s3",
   media_public_base_url: "",
   post_video_max_upload_bytes: 1024 * 1024 * 1024,
   post_video_max_duration_seconds: 300,
+  feed_date_lookback_hours: 168,
+  feed_fallback_date_lookback_hours: 720,
+  feed_fallback_post_count: 100,
 });
 const allowedCountries = ref<string[]>([]);
 const countryInput = ref("");
@@ -229,10 +233,14 @@ async function loadSettings() {
     settingsForm.user_connection_limit = Number(payload.user_connection_limit || 7500);
     settingsForm.post_reply_share_char_cap = Number(payload.post_reply_share_char_cap || 500);
     settingsForm.daily_post_reply_share_limit = Number(payload.daily_post_reply_share_limit || 250);
+    settingsForm.penalty_expiry_days = Number(payload.penalty_expiry_days || 90);
     settingsForm.media_storage_mode = String(payload.media_storage_mode || "local").toLowerCase() === "s3" ? "s3" : "local";
     settingsForm.media_public_base_url = String(payload.media_public_base_url || "");
     settingsForm.post_video_max_upload_bytes = Number(payload.post_video_max_upload_bytes || 1024 * 1024 * 1024);
     settingsForm.post_video_max_duration_seconds = Number(payload.post_video_max_duration_seconds || 300);
+    settingsForm.feed_date_lookback_hours = Number(payload.feed_date_lookback_hours || 168);
+    settingsForm.feed_fallback_date_lookback_hours = Number(payload.feed_fallback_date_lookback_hours || 720);
+    settingsForm.feed_fallback_post_count = Number(payload.feed_fallback_post_count || 100);
     const savedCountries = Array.isArray(payload.allowed_signup_countries)
       ? payload.allowed_signup_countries.map((item) => String(item).trim()).filter(Boolean)
       : [];
@@ -299,10 +307,14 @@ async function onSaveDeliverySettings() {
       user_connection_limit: number;
       post_reply_share_char_cap: number;
       daily_post_reply_share_limit: number;
+      penalty_expiry_days: number;
       media_storage_mode: "local" | "s3";
       media_public_base_url: string;
       post_video_max_upload_bytes: number;
       post_video_max_duration_seconds: number;
+      feed_date_lookback_hours: number;
+      feed_fallback_date_lookback_hours: number;
+      feed_fallback_post_count: number;
     }> = {
       site_name: settingsForm.site_name.trim(),
       support_email: settingsForm.support_email.trim(),
@@ -324,10 +336,14 @@ async function onSaveDeliverySettings() {
       user_connection_limit: Number(settingsForm.user_connection_limit || 7500),
       post_reply_share_char_cap: Number(settingsForm.post_reply_share_char_cap || 500),
       daily_post_reply_share_limit: Number(settingsForm.daily_post_reply_share_limit || 250),
+      penalty_expiry_days: Number(settingsForm.penalty_expiry_days || 90),
       media_storage_mode: settingsForm.media_storage_mode,
       media_public_base_url: settingsForm.media_public_base_url.trim(),
       post_video_max_upload_bytes: Number(settingsForm.post_video_max_upload_bytes || 1024 * 1024 * 1024),
       post_video_max_duration_seconds: Number(settingsForm.post_video_max_duration_seconds || 300),
+      feed_date_lookback_hours: Number(settingsForm.feed_date_lookback_hours || 168),
+      feed_fallback_date_lookback_hours: Number(settingsForm.feed_fallback_date_lookback_hours || 720),
+      feed_fallback_post_count: Number(settingsForm.feed_fallback_post_count || 100),
     };
     if (smtpPasswordInput.value.trim()) {
       payload.email_host_password = smtpPasswordInput.value.trim();
@@ -352,10 +368,14 @@ async function onSaveDeliverySettings() {
     settingsForm.user_connection_limit = Number(updated.user_connection_limit || 7500);
     settingsForm.post_reply_share_char_cap = Number(updated.post_reply_share_char_cap || 500);
     settingsForm.daily_post_reply_share_limit = Number(updated.daily_post_reply_share_limit || 250);
+    settingsForm.penalty_expiry_days = Number(updated.penalty_expiry_days || 90);
     settingsForm.media_storage_mode = String(updated.media_storage_mode || "local").toLowerCase() === "s3" ? "s3" : "local";
     settingsForm.media_public_base_url = String(updated.media_public_base_url || "");
     settingsForm.post_video_max_upload_bytes = Number(updated.post_video_max_upload_bytes || 1024 * 1024 * 1024);
     settingsForm.post_video_max_duration_seconds = Number(updated.post_video_max_duration_seconds || 300);
+    settingsForm.feed_date_lookback_hours = Number(updated.feed_date_lookback_hours || 168);
+    settingsForm.feed_fallback_date_lookback_hours = Number(updated.feed_fallback_date_lookback_hours || 720);
+    settingsForm.feed_fallback_post_count = Number(updated.feed_fallback_post_count || 100);
     smtpPasswordInput.value = "";
     showStatus("Delivery and Runtime", "Delivery and runtime settings updated.", "success");
   } catch (error) {
@@ -467,6 +487,14 @@ onMounted(async () => {
             step="1"
             placeholder="Maximum posts, replies, and shares per day"
           />
+          <label class="profile-section-heading admin-settings">Penalty Expiry Days</label>
+          <input
+            v-model.number="settingsForm.penalty_expiry_days"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Days before penalties expire"
+          />
           <label class="profile-section-heading admin-settings">Media Storage Mode</label>
           <select v-model="settingsForm.media_storage_mode">
             <option value="local">Local (backend storage)</option>
@@ -493,6 +521,30 @@ onMounted(async () => {
             min="1"
             step="1"
             placeholder="Maximum uploaded video length in seconds"
+          />
+          <label class="profile-section-heading admin-settings">Feed Date Lookback Hours</label>
+          <input
+            v-model.number="settingsForm.feed_date_lookback_hours"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Primary feed recency lookback in hours"
+          />
+          <label class="profile-section-heading admin-settings">Feed Fallback Date Lookback Hours</label>
+          <input
+            v-model.number="settingsForm.feed_fallback_date_lookback_hours"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Expanded lookback window when feed is sparse"
+          />
+          <label class="profile-section-heading admin-settings">Feed Fallback Post Count</label>
+          <input
+            v-model.number="settingsForm.feed_fallback_post_count"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Trigger fallback when recent candidates are below this count"
           />
           <h3>SMTP Settings</h3>
           <label class="profile-section-heading admin-settings">Email Backend</label>

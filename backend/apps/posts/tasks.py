@@ -8,6 +8,7 @@ from django.core.files.base import File
 from django.utils import timezone
 
 from apps.posts.models import IdempotencyRecord, LinkPreviewCache, MediaAttachment, UploadedMediaAsset
+from apps.posts.media_intelligence import ensure_uploaded_media_asset_analysis
 from apps.posts.storage import MediaStorageConfigError, build_media_url_from_saved_name, get_media_storage_for_mode
 from apps.posts.video_processing import generate_video_thumbnail, transcode_video_to_hls, transcode_video_to_mp4
 
@@ -40,7 +41,8 @@ def process_uploaded_video(
     except MediaStorageConfigError as exc:
         if asset:
             asset.processing_status = UploadedMediaAsset.ProcessingStatus.FAILED
-            asset.save(update_fields=["processing_status", "updated_at"])
+            asset.analysis_status = UploadedMediaAsset.AnalysisStatus.FAILED
+            asset.save(update_fields=["processing_status", "analysis_status", "updated_at"])
             MediaAttachment.objects.filter(media_url=asset.media_url, media_type=MediaAttachment.MediaType.VIDEO).update(
                 processing_status=UploadedMediaAsset.ProcessingStatus.FAILED
             )
@@ -49,7 +51,8 @@ def process_uploaded_video(
     if not storage.exists(saved_name):
         if asset:
             asset.processing_status = UploadedMediaAsset.ProcessingStatus.FAILED
-            asset.save(update_fields=["processing_status", "updated_at"])
+            asset.analysis_status = UploadedMediaAsset.AnalysisStatus.FAILED
+            asset.save(update_fields=["processing_status", "analysis_status", "updated_at"])
             MediaAttachment.objects.filter(media_url=asset.media_url, media_type=MediaAttachment.MediaType.VIDEO).update(
                 processing_status=UploadedMediaAsset.ProcessingStatus.FAILED
             )
@@ -74,7 +77,8 @@ def process_uploaded_video(
         except RuntimeError as exc:
             if asset:
                 asset.processing_status = UploadedMediaAsset.ProcessingStatus.FAILED
-                asset.save(update_fields=["processing_status", "updated_at"])
+                asset.analysis_status = UploadedMediaAsset.AnalysisStatus.FAILED
+                asset.save(update_fields=["processing_status", "analysis_status", "updated_at"])
                 MediaAttachment.objects.filter(media_url=asset.media_url, media_type=MediaAttachment.MediaType.VIDEO).update(
                     processing_status=UploadedMediaAsset.ProcessingStatus.FAILED
                 )
@@ -119,6 +123,10 @@ def process_uploaded_video(
             hls_manifest_url=asset.hls_manifest_url,
             media_bytes=asset.media_bytes,
         )
+        analyze_uploaded_media_asset.delay(
+            uploaded_asset_id=asset.id,
+            region_code=getattr(getattr(asset.user, "profile", None), "location", "global"),
+        )
 
     return {
         "status": "ok",
@@ -126,6 +134,18 @@ def process_uploaded_video(
         "thumbnail_saved_name": thumbnail_saved_name,
         "hls_manifest_saved_name": hls_manifest_saved_name,
     }
+
+
+@shared_task
+def analyze_uploaded_media_asset(uploaded_asset_id: int, region_code: str = "global") -> dict:
+    return analyze_uploaded_media_asset_now(uploaded_asset_id=uploaded_asset_id, region_code=region_code)
+
+
+def analyze_uploaded_media_asset_now(uploaded_asset_id: int, region_code: str = "global") -> dict:
+    asset = UploadedMediaAsset.objects.filter(id=uploaded_asset_id).select_related("user", "user__profile").first()
+    if not asset:
+        return {"status": "missing_asset", "uploaded_asset_id": uploaded_asset_id}
+    return ensure_uploaded_media_asset_analysis(asset=asset, region_code=region_code)
 
 
 def _derive_saved_name_from_media_url(media_url: str) -> str:
